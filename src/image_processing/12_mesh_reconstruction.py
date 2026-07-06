@@ -108,7 +108,8 @@ def reconstruct_triposr(
     
     # Làm mượt bề mặt (Taubin smoothing) — triệt tiêu gợn sóng lồi lõm
     print("[MESH] Đang tối ưu độ sắc nét và làm mượt bề mặt...")
-    trimesh.smoothing.filter_taubin(mesh, iterations=10)
+    # TẠM TẮT: Làm mượt làm lệch tọa độ vertices, khiến triplane query màu bị sai!
+    # trimesh.smoothing.filter_taubin(mesh, iterations=10)
 
     # Tạo mesh thạch cao trắng (Fallback / Base)
     clean_mesh = trimesh.Trimesh(
@@ -116,7 +117,8 @@ def reconstruct_triposr(
         faces=np.array(mesh.faces),
         process=False,
     )
-    clean_mesh.fix_normals()
+    # Bỏ qua fix_normals() vì thuật toán tự động này hay lật ngược mặt 3D
+    # clean_mesh.fix_normals()
     material = trimesh.visual.material.PBRMaterial(
         baseColorFactor=[1.0, 1.0, 1.0, 1.0],  # #ffffff
         metallicFactor=0.0,

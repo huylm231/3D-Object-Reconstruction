@@ -71,6 +71,15 @@ def run_full_pipeline(
     print("=" * 60)
     print("  PIPELINE 3D OBJECT RECONSTRUCTION")
     print(f"  Anh: {image_path}")
+    
+    import torch
+    if torch.cuda.is_available():
+        gpu_name = torch.cuda.get_device_name(0)
+        print(f"  [HARDWARE] Đã phát hiện GPU: {gpu_name}")
+        print("  [HARDWARE] Sẽ sử dụng GPU để tăng tốc tối đa quá trình tạo 3D!")
+    else:
+        print("  [HARDWARE] Không phát hiện GPU. Sẽ chạy trên CPU (có thể mất nhiều thời gian hơn).")
+        
     print("=" * 60)
 
     # == Buoc 1: Chuyen doi khong gian mau ==
@@ -301,36 +310,13 @@ def run_full_pipeline(
     depth_float = None
     try:
         print("\n[10/12] Uoc luong Depth (Depth-Anything-V2)...")
-        t = time.time()
-        mod = _import_module("10_depth_estimation")
-
-        depth_float, depth_u8 = mod.estimate_depth(processed_image_path, encoder="vits", mask=cropped_mask)
-        depth_color = mod.visualize_depth(depth_u8)
-
-        results["steps"]["10_depth"] = {
-            "shape": depth_float.shape,
-            "time": time.time() - t,
-        }
-
-        if save_intermediate:
-            save_image(str(out / f"{stem}_depth.png"), depth_u8)
-            save_image(str(out / f"{stem}_depth_color.png"), depth_color)
-            
-            img_to_use = cv2.imread(processed_image_path) if processed_image_path != image_path else img
-            show_images(
-                [img_to_use, depth_u8, depth_color],
-                ["Goc (Cropped)", "Depth (Gray)", "Depth (Color)"],
-                save_path=str(out / f"{stem}_10_depth.png"),
-            )
-        print(f"  OK ({time.time() - t:.2f}s)")
+        depth_file_path = out / f"{stem}_depth.png"
+        print(f"  >> Đường dẫn ước lượng ảnh depth: {depth_file_path} (chỉ hiển thị, không tải/chạy AI)")
         
-        if on_depth_ready:
-            try:
-                # depth_color thuong la anh mau BGR cua openCV
-                on_depth_ready(depth_color)
-            except Exception as e:
-                print(f"  Loi khi goi callback on_depth_ready: {e}")
-                
+        results["steps"]["10_depth"] = {
+            "skipped": True
+        }
+        
     except Exception as e:
         print(f"  LOI: {e}")
         results["errors"].append(f"Step 10: {e}")
@@ -346,15 +332,15 @@ def run_full_pipeline(
             pcd = mod.depth_to_pointcloud(depth_float, img_to_use)
             info = mod.pointcloud_info(pcd)
 
-            ply_path = str(out / f"{stem}.ply")
-            mod.save_pointcloud(pcd, ply_path)
-            results["point_cloud_path"] = ply_path
+            # ply_path = str(out / f"{stem}.ply")
+            # mod.save_pointcloud(pcd, ply_path)
+            # results["point_cloud_path"] = ply_path
 
             results["steps"]["11_pointcloud"] = {
                 "num_points": info["num_points"],
                 "time": time.time() - t,
             }
-            print(f"  OK: {info['num_points']} diem ({time.time() - t:.2f}s)")
+            print(f"  OK: {info['num_points']} diem ({time.time() - t:.2f}s) (không lưu file .ply)")
         else:
             print("  >> Bo qua (khong co depth map)")
             results["steps"]["11_pointcloud"] = {"skipped": True}
@@ -374,7 +360,7 @@ def run_full_pipeline(
 
         if use_triposr:
             glb_path, raw_mesh, model, scene_code = mod.reconstruct_triposr(
-                processed_image_path, str(out), mc_resolution=512, foreground_ratio=0.95
+                processed_image_path, str(out), mc_resolution=256, foreground_ratio=0.95
             )
             results["model_path"] = glb_path
             results["steps"]["12_mesh"] = {

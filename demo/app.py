@@ -55,9 +55,12 @@ def compare_images(img1_bytes, img2_path):
     except Exception:
         return 0.0
 
-def find_similar_cached_model(img_bytes, cache_dir):
-    cache_dir = Path(cache_dir)
-    cached_images = list(cache_dir.glob("*.png")) + list(cache_dir.glob("*.jpg"))
+def find_similar_cached_model(img_bytes, search_dir):
+    """Tim anh tuong tu trong thu muc. Tra ve (image_path, score) hoac (None, 0.0)."""
+    search_dir = Path(search_dir)
+    # Lay tat ca anh PNG/JPG, loai tru _nobg (anh da xu ly xoa phong)
+    all_images = list(search_dir.glob("*.png")) + list(search_dir.glob("*.jpg")) + list(search_dir.glob("*.jpeg"))
+    cached_images = [p for p in all_images if "_nobg" not in p.stem]
     
     best_match = None
     best_score = 0.0
@@ -79,8 +82,41 @@ def find_similar_cached_model(img_bytes, cache_dir):
                 pass
                 
     if best_score >= THRESHOLD and best_match is not None:
-        return best_match.stem, best_score
+        return best_match, best_score
     return None, 0.0
+
+def find_glbs_for_image(image_path):
+    """Tim file .glb trang (step 12) va mau (step 13/cache) tuong ung voi anh.
+    Tra ve (white_glb, colored_glb). Moi gia tri co the la None."""
+    image_path = Path(image_path)
+    parent = image_path.parent
+    stem = image_path.stem  # vd: 49e6caf2-..._cropped
+    
+    # Tim base stem (bo _cropped neu co)
+    base_stem = stem.replace("_cropped", "") if "_cropped" in stem else stem
+    
+    # Tim tat ca .glb lien quan
+    all_glbs = list(parent.glob(f"{stem}*.glb")) + list(parent.glob(f"{base_stem}*.glb"))
+    # Bo trung lap
+    all_glbs = list({str(p): p for p in all_glbs}.values())
+    
+    white_glb = None
+    colored_glb = None
+    
+    for g in all_glbs:
+        name = g.name.lower()
+        if "textured" in name:
+            colored_glb = g
+        elif white_glb is None:  # GLB dau tien khong phai textured = trang
+            white_glb = g
+    
+    # Tim colored trong cache
+    if not colored_glb:
+        for cache_glb in CACHE_DIR.glob("*.glb"):
+            colored_glb = cache_glb
+            break  # Lay file dau tien
+    
+    return white_glb, colored_glb
 
 def get_viewer_html(glb_path_or_bytes, is_bytes=False):
     if not is_bytes:
@@ -106,6 +142,11 @@ def get_viewer_html(glb_path_or_bytes, is_bytes=False):
         </model-viewer>
     </div>
     """
+
+def render_html(html_str, height=535):
+    # Phai dung st.components.v1.html vi no tao iframe voi height co dinh.
+    # st.html() khong ho tro height → model-viewer bi co thanh 0px.
+    st.components.v1.html(html_str, height=height)
 
 # ──────────────────── Giao dien Streamlit ────────────────────
 st.set_page_config(page_title="3D Shoe Reconstruction", page_icon="👟", layout="wide", initial_sidebar_state="collapsed")
@@ -181,37 +222,48 @@ with col2:
 
         if st.session_state.current_model_path is None:
             if st.button("🚀 Bắt đầu tạo mô hình 3D", type="primary", width="stretch"):
-                # Buoc 12: So sanh anh va hien thi neu giong
-                with st.spinner("🔍 Đang tìm kiếm trong kho dữ liệu (sử dụng đa luồng)..."):
-                    matched_hash, score = find_similar_cached_model(img_bytes, CACHE_DIR)
+                # Tim anh tuong tu trong outputs
+                white_glb = None
+                colored_glb = None
                 
-                if not matched_hash and cached_glb.exists():
-                    matched_hash = img_hash
-                    score = 1.0
+                with st.spinner("🔍 Đang tìm kiếm trong kho dữ liệu (sử dụng đa luồng)..."):
+                    matched_img, score = find_similar_cached_model(img_bytes, OUTPUT_DIR)
+                
+                # Neu tim thay anh tuong tu, tim file GLB tuong ung
+                if matched_img:
+                    white_glb, colored_glb = find_glbs_for_image(matched_img)
+                
+                # Fallback: check exact hash trong cache
+                if not white_glb and not colored_glb and cached_glb.exists():
+                    colored_glb = cached_glb
 
-                if matched_hash:
+                if white_glb or colored_glb:
                     st.success(f"⚡ Đã tìm thấy mô hình tương tự! Bỏ qua các bước 1 tới 12.")
-                    
-                    matched_white_glb = CACHE_DIR / f"{matched_hash}_white.glb"
-                    matched_glb = CACHE_DIR / f"{matched_hash}.glb"
-                    
                     viewer_placeholder = st.empty()
                     
-                    if matched_white_glb.exists():
+                    # Buoc 1: Hien mo hinh trang truoc
+                    if white_glb and white_glb.exists():
                         with viewer_placeholder:
-                            st.components.v1.html(get_viewer_html(matched_white_glb), height=535)
+                            render_html(get_viewer_html(white_glb), height=535)
+                    
+                    # Buoc 2: Hien mo hinh co mau (neu co)
+                    final_model = None
+                    if colored_glb and colored_glb.exists():
+                        if white_glb and white_glb.exists():
+                            sim_progress = st.progress(0, text="Đang tiến hành tô màu mô hình 3D trắng...")
+                            for i in range(100):
+                                time.sleep(0.02)
+                                sim_progress.progress(i + 1, text=f"Đang tiến hành tô màu mô hình 3D trắng... ({i+1}%)")
+                            sim_progress.empty()
                         
-                    sim_progress = st.progress(0, text="Đang tiến hành tô màu mô hình 3D trắng...")
-                    for i in range(100):
-                        time.sleep(0.02)
-                        sim_progress.progress(i + 1, text=f"Đang tiến hành tô màu mô hình 3D trắng... ({i+1}%)")
-                    sim_progress.empty()
-                        
-                    if matched_glb.exists():
                         with viewer_placeholder:
-                            st.components.v1.html(get_viewer_html(matched_glb), height=535)
-                        
-                        st.session_state.current_model_path = matched_glb
+                            render_html(get_viewer_html(colored_glb), height=535)
+                        final_model = str(colored_glb)
+                    elif white_glb and white_glb.exists():
+                        final_model = str(white_glb)
+                    
+                    if final_model:
+                        st.session_state.current_model_path = final_model
                         st.session_state.show_save_buttons = False
                         st.session_state.feedback_mode = False
                         time.sleep(1)
@@ -220,8 +272,8 @@ with col2:
                     with st.spinner("Đang xử lý ảnh và chạy AI (có thể mất vài phút)..."):
                         try:
                             ext = Path(uploaded_file.name).suffix.lower()
-                            job_id = str(uuid.uuid4())
-                            img_path = UPLOAD_DIR / f"{job_id}{ext}"
+                            job_id = img_hash
+                            img_path = OUTPUT_DIR / f"{job_id}{ext}"
                             
                             with open(img_path, "wb") as f:
                                 f.write(img_bytes)
@@ -235,7 +287,7 @@ with col2:
                                     status_placeholder.empty()
                                 st.session_state.current_white_model_path = white_glb_path
                                 with viewer_placeholder:
-                                    st.components.v1.html(get_viewer_html(white_glb_path), height=535)
+                                    render_html(get_viewer_html(white_glb_path), height=535)
 
                             # Chay pipeline tao 3D (truyen callback cho b12)
                             model_path = run_pipeline(
@@ -265,7 +317,7 @@ with col2:
                 with open(model_path, "rb") as f:
                     model_bytes_3d = f.read()
                 
-                st.components.v1.html(get_viewer_html(model_bytes_3d, is_bytes=True), height=535)
+                render_html(get_viewer_html(model_bytes_3d, is_bytes=True), height=535)
                 
                 st.download_button(
                     label="📥 Tải xuống file GLB (.glb)",
@@ -283,15 +335,6 @@ with col2:
                         if c1.button("✅ Lưu kết quả (Tốt)", type="primary", width="stretch"):
                             # Luu model mau
                             shutil.copy(model_path, cached_glb)
-                            # Luu anh goc de so sanh (buoc 12 yeu cau)
-                            ext = Path(uploaded_file.name).suffix.lower()
-                            img_cache_path = CACHE_DIR / f"{img_hash}{ext}"
-                            with open(img_cache_path, "wb") as f:
-                                f.write(img_bytes)
-                            # Luu mo hinh trang
-                            if st.session_state.current_white_model_path:
-                                white_cache_path = CACHE_DIR / f"{img_hash}_white.glb"
-                                shutil.copy(st.session_state.current_white_model_path, white_cache_path)
                                 
                             st.session_state.show_save_buttons = False
                             st.success("🎉 Đã lưu thành công! Lần sau các ảnh tương tự sẽ tự động được nhận diện.")

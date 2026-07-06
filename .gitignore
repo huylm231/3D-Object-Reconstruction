@@ -12,11 +12,11 @@ __pycache__/
 # Dữ liệu sinh ra trong quá trình chạy (Rác, Cache, Model 3D)
 data/cache/*
 data/feedback/*
-data/outputs/*
+# data/outputs/* (cho phép push thư mục output)
 data/uploads/*
 !data/cache/.gitkeep
 !data/feedback/.gitkeep
-!data/outputs/.gitkeep
+# !data/outputs/.gitkeep
 !data/uploads/.gitkeep
 
 # Checkpoint weights của AI Model (File quá nặng không nên push lên Git)
