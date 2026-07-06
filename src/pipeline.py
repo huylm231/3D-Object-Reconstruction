@@ -56,10 +56,11 @@ def _estimate_depth(image_path: Path, output_dir: Path):
         )
 
         # Config encoder nhe nhat (vits) de chay tren CPU
-        cfg = {"encoder": "vits", "features": 64, "out_channels": [48, 96, 192, 384]}
+        encoder = "vits"
+        cfg = {"encoder": encoder, "features": 64, "out_channels": [48, 96, 192, 384]}
 
         model = DepthAnythingV2(**cfg)
-        checkpoint = ROOT / "models" / "depth_anything_v2_vits.pth"
+        checkpoint = Path(__file__).parent.parent / "weights" / f"depth_anything_v2_{encoder}.pth"
         if not checkpoint.exists():
             raise FileNotFoundError(
                 f"Checkpoint khong ton tai: {checkpoint}\n"
