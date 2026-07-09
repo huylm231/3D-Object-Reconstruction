@@ -18,6 +18,12 @@ Pipeline:
 """
 
 import sys
+if sys.stdout is not None and getattr(sys.stdout, 'encoding', '').lower() != 'utf-8':
+    try: sys.stdout.reconfigure(encoding='utf-8')
+    except: pass
+if sys.stderr is not None and getattr(sys.stderr, 'encoding', '').lower() != 'utf-8':
+    try: sys.stderr.reconfigure(encoding='utf-8')
+    except: pass
 import time
 import importlib
 import traceback
@@ -25,6 +31,11 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+
+
+def _log(*args, **kwargs):
+    """Print với flush=True để hiển thị real-time trên terminal khi chạy qua Streamlit."""
+    print(*args, **kwargs, flush=True)
 
 
 def _import_module(name):
@@ -39,6 +50,7 @@ def run_full_pipeline(
     save_intermediate: bool = True,
     on_mesh_ready = None,
     on_depth_ready = None,
+    on_progress = None,
 ) -> dict:
     """
     Chay toan bo pipeline 12 buoc tu anh 2D -> mo hinh 3D.
@@ -48,11 +60,21 @@ def run_full_pipeline(
         output_dir: Thu muc luu ket qua.
         use_triposr: True = dung TripoSR dung mesh. False = chi Poisson.
         save_intermediate: True = luu ket qua tung buoc.
+        on_progress: Callback(step: int, total: int, message: str) để báo tiến trình.
 
     Returns:
         dict chua ket qua tung buoc va duong dan file cuoi cung.
     """
     from src.image_processing.utils import load_image, save_image, show_images
+
+    def _progress(step, total, msg):
+        """Gửi tiến trình ra terminal + callback (nếu có)."""
+        _log(msg)
+        if on_progress:
+            try:
+                on_progress(step, total, msg)
+            except Exception:
+                pass
 
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
@@ -68,23 +90,23 @@ def run_full_pipeline(
     stem = Path(image_path).stem
     start_total = time.time()
 
-    print("=" * 60)
-    print("  PIPELINE 3D OBJECT RECONSTRUCTION")
-    print(f"  Anh: {image_path}")
+    _log("=" * 60)
+    _log("  PIPELINE 3D OBJECT RECONSTRUCTION")
+    _log(f"  Anh: {image_path}")
     
     import torch
     if torch.cuda.is_available():
         gpu_name = torch.cuda.get_device_name(0)
-        print(f"  [HARDWARE] Đã phát hiện GPU: {gpu_name}")
-        print("  [HARDWARE] Sẽ sử dụng GPU để tăng tốc tối đa quá trình tạo 3D!")
+        _log(f"  [HARDWARE] Đã phát hiện GPU: {gpu_name}")
+        _log("  [HARDWARE] Sẽ sử dụng GPU để tăng tốc tối đa quá trình tạo 3D!")
     else:
-        print("  [HARDWARE] Không phát hiện GPU. Sẽ chạy trên CPU (có thể mất nhiều thời gian hơn).")
+        _log("  [HARDWARE] Không phát hiện GPU. Sẽ chạy trên CPU (có thể mất nhiều thời gian hơn).")
         
-    print("=" * 60)
+    _log("=" * 60)
 
     # == Buoc 1: Chuyen doi khong gian mau ==
     try:
-        print("\n[1/12] Chuyen doi khong gian mau...")
+        _progress(1, 13, "\n[1/12] Chuyen doi khong gian mau...")
         t = time.time()
         mod = _import_module("01_color_spaces")
 
@@ -103,16 +125,16 @@ def run_full_pipeline(
                 ["Goc", "Grayscale", "HSV", "CLAHE"],
                 save_path=str(out / f"{stem}_01_color.png"),
             )
-        print(f"  OK ({time.time() - t:.2f}s)")
+        _log(f"  OK ({time.time() - t:.2f}s)")
     except Exception as e:
-        print(f"  LOI: {e}")
+        _log(f"  LOI: {e}")
         results["errors"].append(f"Step 1: {e}")
         gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
         equalized = img
 
     # == Buoc 2: Loc Fourier ==
     try:
-        print("\n[2/12] Loc tan so Fourier...")
+        _progress(2, 13, "\n[2/12] Loc tan so Fourier...")
         t = time.time()
         mod = _import_module("02_fourier_filtering")
 
@@ -127,14 +149,14 @@ def run_full_pipeline(
                 ["Grayscale", "FFT Spectrum", "Low-pass Filtered"],
                 save_path=str(out / f"{stem}_02_fourier.png"),
             )
-        print(f"  OK ({time.time() - t:.2f}s)")
+        _log(f"  OK ({time.time() - t:.2f}s)")
     except Exception as e:
-        print(f"  LOI: {e}")
+        _log(f"  LOI: {e}")
         results["errors"].append(f"Step 2: {e}")
 
     # == Buoc 3: Khu nhieu Wavelet ==
     try:
-        print("\n[3/12] Khu nhieu Wavelet...")
+        _progress(3, 13, "\n[3/12] Khu nhieu Wavelet...")
         t = time.time()
         mod = _import_module("03_wavelet_denoising")
 
@@ -149,14 +171,14 @@ def run_full_pipeline(
                 ["Goc", "Wavelet Denoised", "LL (Approx)", "HH (Diagonal)"],
                 save_path=str(out / f"{stem}_03_wavelet.png"),
             )
-        print(f"  OK ({time.time() - t:.2f}s)")
+        _log(f"  OK ({time.time() - t:.2f}s)")
     except Exception as e:
-        print(f"  LOI: {e}")
+        _log(f"  LOI: {e}")
         results["errors"].append(f"Step 3: {e}")
 
     # == Buoc 4: Bien doi hinh hoc ==
     try:
-        print("\n[4/12] Bien doi hinh hoc...")
+        _progress(4, 13, "\n[4/12] Bien doi hinh hoc...")
         t = time.time()
         mod = _import_module("04_geometric_transform")
 
@@ -171,15 +193,15 @@ def run_full_pipeline(
                 ["Goc", "Resize 400px"],
                 save_path=str(out / f"{stem}_04_geometric.png"),
             )
-        print(f"  OK ({time.time() - t:.2f}s)")
+        _log(f"  OK ({time.time() - t:.2f}s)")
     except Exception as e:
-        print(f"  LOI: {e}")
+        _log(f"  LOI: {e}")
         results["errors"].append(f"Step 4: {e}")
 
     # == Buoc 5: Hinh thai hoc ==
     mask = None
     try:
-        print("\n[5/12] Xu ly hinh thai hoc...")
+        _progress(5, 13, "\n[5/12] Xu ly hinh thai hoc...")
         t = time.time()
         mod = _import_module("05_morphology")
 
@@ -194,14 +216,14 @@ def run_full_pipeline(
                 ["Goc", "Clean Mask", "Morph Gradient"],
                 save_path=str(out / f"{stem}_05_morphology.png"),
             )
-        print(f"  OK ({time.time() - t:.2f}s)")
+        _log(f"  OK ({time.time() - t:.2f}s)")
     except Exception as e:
-        print(f"  LOI: {e}")
+        _log(f"  LOI: {e}")
         results["errors"].append(f"Step 5: {e}")
 
     # == Buoc 6: Phat hien canh ==
     try:
-        print("\n[6/12] Phat hien canh...")
+        _progress(6, 13, "\n[6/12] Phat hien canh...")
         t = time.time()
         mod = _import_module("06_edge_detection")
 
@@ -217,14 +239,14 @@ def run_full_pipeline(
                 ["Grayscale", "Canny", "Sobel", "Laplacian"],
                 save_path=str(out / f"{stem}_06_edge.png"),
             )
-        print(f"  OK ({time.time() - t:.2f}s)")
+        _log(f"  OK ({time.time() - t:.2f}s)")
     except Exception as e:
-        print(f"  LOI: {e}")
+        _log(f"  LOI: {e}")
         results["errors"].append(f"Step 6: {e}")
 
     # == Buoc 7: Phan doan anh ==
     try:
-        print("\n[7/12] Phan doan anh...")
+        _progress(7, 13, "\n[7/12] Phan doan anh...")
         t = time.time()
         mod = _import_module("07_segmentation")
 
@@ -239,14 +261,14 @@ def run_full_pipeline(
                 ["Goc", "Otsu Threshold", "K-Means (K=4)"],
                 save_path=str(out / f"{stem}_07_segmentation.png"),
             )
-        print(f"  OK ({time.time() - t:.2f}s)")
+        _log(f"  OK ({time.time() - t:.2f}s)")
     except Exception as e:
-        print(f"  LOI: {e}")
+        _log(f"  LOI: {e}")
         results["errors"].append(f"Step 7: {e}")
 
     # == Buoc 8: Phat hien dac trung ==
     try:
-        print("\n[8/12] Phat hien dac trung...")
+        _progress(8, 13, "\n[8/12] Phat hien dac trung...")
         t = time.time()
         mod = _import_module("08_feature_detection")
 
@@ -272,21 +294,21 @@ def run_full_pipeline(
                 ],
                 save_path=str(out / f"{stem}_08_features.png"),
             )
-        print(f"  OK: SIFT={len(kp_sift)} kp, ORB={len(kp_orb)} kp ({time.time() - t:.2f}s)")
+        _log(f"  OK: SIFT={len(kp_sift)} kp, ORB={len(kp_orb)} kp ({time.time() - t:.2f}s)")
     except Exception as e:
-        print(f"  LOI: {e}")
+        _log(f"  LOI: {e}")
         results["errors"].append(f"Step 8: {e}")
 
     # == Buoc 9: Doi sanh dac trung (bo qua neu 1 anh) ==
-    print("\n[9/12] Doi sanh dac trung...")
-    print("  >> Bo qua (can >=2 anh multi-view, demo dung 1 anh)")
+    _progress(9, 13, "\n[9/12] Doi sanh dac trung...")
+    _log("  >> Bo qua (can >=2 anh multi-view, demo dung 1 anh)")
     results["steps"]["09_matching"] = {"skipped": True, "reason": "single image"}
 
     # == Tiền xử lý Tối ưu: Bounding Box Cropping ==
     processed_image_path = image_path
     cropped_mask = mask
     try:
-        print("\n[OPTIMIZATION] Bounding Box Cropping (Tập trung AI vào vật thể)...")
+        _log("\n[OPTIMIZATION] Bounding Box Cropping (Tập trung AI vào vật thể)...")
         if mask is not None:
             contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
             if contours:
@@ -302,28 +324,28 @@ def run_full_pipeline(
                 
                 processed_image_path = str(out / f"{stem}_cropped.png")
                 cv2.imwrite(processed_image_path, img_cropped)
-                print(f"  OK: Đã cắt ảnh từ {img.shape[:2]} -> {img_cropped.shape[:2]}")
+                _log(f"  OK: Đã cắt ảnh từ {img.shape[:2]} -> {img_cropped.shape[:2]}")
     except Exception as e:
-        print(f"  LOI Crop: {e}")
+        _log(f"  LOI Crop: {e}")
 
     # == Buoc 10: Uoc luong Depth ==
     depth_float = None
     try:
-        print("\n[10/12] Uoc luong Depth (Depth-Anything-V2)...")
+        _progress(10, 13, "\n[10/12] Uoc luong Depth (Depth-Anything-V2)...")
         depth_file_path = out / f"{stem}_depth.png"
-        print(f"  >> Đường dẫn ước lượng ảnh depth: {depth_file_path} (chỉ hiển thị, không tải/chạy AI)")
+        _log(f"  >> Đường dẫn ước lượng ảnh depth: {depth_file_path} (chỉ hiển thị, không tải/chạy AI)")
         
         results["steps"]["10_depth"] = {
             "skipped": True
         }
         
     except Exception as e:
-        print(f"  LOI: {e}")
+        _log(f"  LOI: {e}")
         results["errors"].append(f"Step 10: {e}")
 
     # == Buoc 11: Tao Point Cloud ==
     try:
-        print("\n[11/12] Tao Point Cloud...")
+        _progress(11, 13, "\n[11/12] Tao Point Cloud...")
         t = time.time()
         mod = _import_module("11_point_cloud")
 
@@ -340,27 +362,27 @@ def run_full_pipeline(
                 "num_points": info["num_points"],
                 "time": time.time() - t,
             }
-            print(f"  OK: {info['num_points']} diem ({time.time() - t:.2f}s) (không lưu file .ply)")
+            _log(f"  OK: {info['num_points']} diem ({time.time() - t:.2f}s) (không lưu file .ply)")
         else:
-            print("  >> Bo qua (khong co depth map)")
+            _log("  >> Bo qua (khong co depth map)")
             results["steps"]["11_pointcloud"] = {"skipped": True}
 
     except ImportError:
-        print("  LOI: Can cai open3d: pip install open3d")
+        _log("  LOI: Can cai open3d: pip install open3d")
         results["errors"].append("Step 11: open3d not installed")
     except Exception as e:
-        print(f"  LOI: {e}")
+        _log(f"  LOI: {e}")
         results["errors"].append(f"Step 11: {e}")
 
     # == Buoc 12: Dung Mesh 3D ==
     try:
-        print("\n[12/12] Dung Mesh 3D...")
+        _progress(12, 13, "\n[12/12] Dung Mesh 3D...")
         t = time.time()
         mod = _import_module("12_mesh_reconstruction")
 
         if use_triposr:
             glb_path, raw_mesh, model, scene_code = mod.reconstruct_triposr(
-                processed_image_path, str(out), mc_resolution=256, foreground_ratio=0.95
+                processed_image_path, str(out), mc_resolution=256, foreground_ratio=0.85
             )
             results["model_path"] = glb_path
             results["steps"]["12_mesh"] = {
@@ -368,15 +390,15 @@ def run_full_pipeline(
                 "path": glb_path,
                 "time": time.time() - t,
             }
-            print(f"  OK: Mesh GLB: {glb_path} ({time.time() - t:.2f}s)")
+            _log(f"  OK: Mesh GLB: {glb_path} ({time.time() - t:.2f}s)")
             
             if on_mesh_ready:
                 try:
                     on_mesh_ready(glb_path)
                 except Exception as e:
-                    print(f"  Loi khi goi callback giao dien: {e}")
+                    _log(f"  Loi khi goi callback giao dien: {e}")
         else:
-            print("  >> TripoSR tat. Thu Poisson...")
+            _log("  >> TripoSR tat. Thu Poisson...")
             if depth_float is not None:
                 mod_pc = _import_module("11_point_cloud")
                 pcd = mod_pc.depth_to_pointcloud(depth_float, img)
@@ -391,44 +413,47 @@ def run_full_pipeline(
                     "time": time.time() - t,
                 }
     except Exception as e:
-        print(f"  LOI: {e}")
+        _log(f"  LOI: {e}")
         results["errors"].append(f"Step 12: {e}")
         traceback.print_exc()
 
     # == Buoc 13: UV Mapping & Texture ==
     if use_triposr and 'raw_mesh' in locals():
         try:
-            print("\n[13/13] UV Mapping & Texture...")
+            _progress(13, 13, "\n[13/13] UV Mapping & Texture...")
             t = time.time()
             mod_uv = _import_module("13_uv_mapping")
+            processed_stem = Path(processed_image_path).stem
+            nobg_path = out / f"{processed_stem}_nobg.png"
             textured_glb_path = mod_uv.apply_uv_mapping(
-                raw_mesh, model, scene_code, str(out), stem, texture_res=1024
+                raw_mesh, model, scene_code, str(out), stem, texture_res=2048,
+                original_image_path=str(nobg_path) if nobg_path.exists() else None
             )
             results["model_path"] = textured_glb_path
             results["steps"]["13_uv_mapping"] = {
                 "path": textured_glb_path,
                 "time": time.time() - t
             }
-            print(f"  OK ({time.time() - t:.2f}s)")
+            _log(f"  OK ({time.time() - t:.2f}s)")
         except Exception as e:
-            print(f"  LOI: {e}")
+            _log(f"  LOI: {e}")
             results["errors"].append(f"Step 13: {e}")
 
     # == Tong ket ==
     total_time = time.time() - start_total
     results["total_time"] = total_time
 
-    print("\n" + "=" * 60)
-    print(f"  PIPELINE HOAN TAT ({total_time:.1f}s)")
+    _log("\n" + "=" * 60)
+    _log(f"  PIPELINE HOAN TAT ({total_time:.1f}s)")
     if results["model_path"]:
-        print(f"  Mo hinh 3D: {results['model_path']}")
+        _log(f"  Mo hinh 3D: {results['model_path']}")
     if results["point_cloud_path"]:
-        print(f"  Point cloud: {results['point_cloud_path']}")
+        _log(f"  Point cloud: {results['point_cloud_path']}")
     if results["errors"]:
-        print(f"  Canh bao: Co {len(results['errors'])} loi:")
+        _log(f"  Canh bao: Co {len(results['errors'])} loi:")
         for err in results["errors"]:
-            print(f"    - {err}")
-    print("=" * 60)
+            _log(f"    - {err}")
+    _log("=" * 60)
 
     return results
 

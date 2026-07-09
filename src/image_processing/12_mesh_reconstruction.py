@@ -26,7 +26,7 @@ def reconstruct_triposr(
     image_path: str,
     output_dir: str,
     mc_resolution: int = 384,
-    foreground_ratio: float = 0.80,
+    foreground_ratio: float = 0.85,
 ) -> str:
     """
     Dựng mesh 3D bằng TripoSR (1 ảnh → mesh GLB).
@@ -117,6 +117,9 @@ def reconstruct_triposr(
         faces=np.array(mesh.faces),
         process=False,
     )
+    # Căn chỉnh hệ tọa độ TripoSR sang chuẩn GLB (Y-up)
+    clean_mesh.apply_transform(trimesh.transformations.rotation_matrix(-np.pi/2, [1, 0, 0]))
+    clean_mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi/2, [0, 1, 0]))
     # Bỏ qua fix_normals() vì thuật toán tự động này hay lật ngược mặt 3D
     # clean_mesh.fix_normals()
     material = trimesh.visual.material.PBRMaterial(

@@ -1,5 +1,13 @@
 import streamlit as st
 import sys
+# Cố định encoding thành UTF-8 trên Windows để tránh lỗi charmap khi in tiếng Việt
+if sys.stdout is not None and getattr(sys.stdout, 'encoding', '').lower() != 'utf-8':
+    try: sys.stdout.reconfigure(encoding='utf-8')
+    except: pass
+if sys.stderr is not None and getattr(sys.stderr, 'encoding', '').lower() != 'utf-8':
+    try: sys.stderr.reconfigure(encoding='utf-8')
+    except: pass
+
 import os
 import uuid
 import base64
@@ -57,32 +65,9 @@ def compare_images(img1_bytes, img2_path):
 
 def find_similar_cached_model(img_bytes, search_dir):
     """Tim anh tuong tu trong thu muc. Tra ve (image_path, score) hoac (None, 0.0)."""
-    search_dir = Path(search_dir)
-    # Lay tat ca anh PNG/JPG, loai tru _nobg (anh da xu ly xoa phong)
-    all_images = list(search_dir.glob("*.png")) + list(search_dir.glob("*.jpg")) + list(search_dir.glob("*.jpeg"))
-    cached_images = [p for p in all_images if "_nobg" not in p.stem]
-    
-    best_match = None
-    best_score = 0.0
-    THRESHOLD = 0.95 
-    
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
-        future_to_path = {
-            executor.submit(compare_images, img_bytes, img_path): img_path 
-            for img_path in cached_images
-        }
-        for future in concurrent.futures.as_completed(future_to_path):
-            img_path = future_to_path[future]
-            try:
-                score = future.result()
-                if score > best_score:
-                    best_score = score
-                    best_match = img_path
-            except Exception:
-                pass
-                
-    if best_score >= THRESHOLD and best_match is not None:
-        return best_match, best_score
+    # [FIX] Tạm thời tắt tính năng so sánh độ tương đồng bằng Histogram.
+    # Tính năng này gây lỗi nhận diện sai khi nhiều ảnh có cùng phông nền trắng.
+    # Chỉ sử dụng EXACT HASH MATCHING (đã code sẵn ở block phía dưới gọi hàm này).
     return None, 0.0
 
 def find_glbs_for_image(image_path):
@@ -282,6 +267,13 @@ with col2:
                             viewer_placeholder = st.empty()
                             status_placeholder = st.empty()
 
+                            def step_progress_callback(step, total, msg):
+                                """Callback để cập nhật progress bar real-time trên giao diện."""
+                                pct = min(95, int(5 + (step / total) * 90))
+                                # Lấy tên bước đẹp hơn
+                                clean_msg = msg.strip().strip('\n')
+                                progress_bar.progress(pct, text=f"{clean_msg} ({pct}%)")
+
                             def step12_callback(white_glb_path):
                                 if status_placeholder:
                                     status_placeholder.empty()
@@ -289,11 +281,12 @@ with col2:
                                 with viewer_placeholder:
                                     render_html(get_viewer_html(white_glb_path), height=535)
 
-                            # Chay pipeline tao 3D (truyen callback cho b12)
+                            # Chay pipeline tao 3D (truyen callback cho b12 + progress)
                             model_path = run_pipeline(
                                 img_path, 
                                 OUTPUT_DIR, 
-                                on_mesh_ready=step12_callback
+                                on_mesh_ready=step12_callback,
+                                on_progress=step_progress_callback
                             )
                             
                             progress_bar.progress(100, text="Hoàn tất 100%!")
