@@ -105,6 +105,13 @@ def reconstruct_triposr(
     mesh = meshes[0]
 
     import trimesh
+    # Repair topology: attempt to make mesh watertight before creating clean plaster mesh
+    try:
+        from src.image_processing.utils import ensure_watertight
+        repaired_mesh, repair_report = ensure_watertight(mesh, hole_fill_method="auto")
+        mesh = repaired_mesh
+    except Exception as exc:
+        print(f"[TOPO] Không thể sửa topology tự động: {exc}")
     
     # Làm mượt bề mặt (Taubin smoothing) — triệt tiêu gợn sóng lồi lõm
     print("[MESH] Đang tối ưu độ sắc nét và làm mượt bề mặt...")
@@ -117,6 +124,11 @@ def reconstruct_triposr(
         faces=np.array(mesh.faces),
         process=False,
     )
+    # Ensure consistent outward normals for solid plaster look
+    try:
+        clean_mesh.fix_normals()
+    except Exception:
+        pass
     # Căn chỉnh hệ tọa độ TripoSR sang chuẩn GLB (Y-up)
     clean_mesh.apply_transform(trimesh.transformations.rotation_matrix(-np.pi/2, [1, 0, 0]))
     clean_mesh.apply_transform(trimesh.transformations.rotation_matrix(np.pi/2, [0, 1, 0]))
@@ -127,8 +139,18 @@ def reconstruct_triposr(
         metallicFactor=0.0,
         roughnessFactor=1.0,
         alphaMode='OPAQUE',
+        doubleSided=True,
     )
-    clean_mesh.visual = trimesh.visual.TextureVisuals(material=material)
+    clean_mesh.visual = trimesh.visual.color.ColorVisuals(mesh=clean_mesh)
+    clean_mesh.visual.material = material
+
+    # Verify watertight before export
+    try:
+        from src.image_processing.utils import verify_watertight_solid
+        verify_watertight_solid(clean_mesh)
+    except Exception as exc:
+        print(f"[VERIFY] Mesh không watertight trước khi xuất trắng: {exc}")
+        # proceed to export anyway but warn
 
     # Export GLB (mesh trắng)
     clean_mesh.export(str(glb_path), file_type='glb')

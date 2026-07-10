@@ -2,7 +2,10 @@ import argparse
 import itertools
 import json
 import math
+import os
+import time
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 
@@ -10,10 +13,52 @@ import cv2
 import numpy as np
 from PIL import Image
 
+from src.image_processing._camera_worker import (
+    _evaluate_camera_candidate,
+    _render_projected_silhouette,
+    _render_projected_silhouette_from_faces,
+    _silhouette_iou,
+)
+
 try:
     import trimesh
 except ImportError:  # pragma: no cover - environment fallback
     trimesh = None
+
+
+def _create_opaque_visual(mesh: Any, vertex_colors: Optional[np.ndarray] = None) -> Any:
+    material = trimesh.visual.material.PBRMaterial(
+        baseColorFactor=[1.0, 1.0, 1.0, 1.0],
+        metallicFactor=0.0,
+        roughnessFactor=1.0,
+        alphaMode="OPAQUE",
+        doubleSided=True,
+    )
+    if vertex_colors is not None:
+        visual = trimesh.visual.color.ColorVisuals(mesh=mesh, vertex_colors=vertex_colors)
+    else:
+        visual = trimesh.visual.color.ColorVisuals(mesh=mesh)
+    visual.material = material
+    print(f"[MATERIAL] Tạo opaque material: alphaMode={visual.material.alphaMode}")
+    return visual
+
+
+def _worker_init() -> None:
+    import logging
+    import os
+    import warnings
+
+    os.environ["STREAMLIT_SERVER_HEADLESS"] = "true"
+    os.environ["STREAMLIT_LOGGER_LEVEL"] = "error"
+    os.environ["STREAMLIT_LOG_LEVEL"] = "error"
+
+    warnings.filterwarnings("ignore", message=".*missing ScriptRunContext.*")
+    logging.getLogger("streamlit").setLevel(logging.ERROR)
+    logging.getLogger("streamlit.runtime").setLevel(logging.ERROR)
+    logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").setLevel(logging.ERROR)
+    for name in list(logging.root.manager.loggerDict):
+        if name.startswith("streamlit"):
+            logging.getLogger(name).setLevel(logging.ERROR)
 
 
 def _as_trimesh(mesh: Any) -> Any:
@@ -22,20 +67,30 @@ def _as_trimesh(mesh: Any) -> Any:
         raise ImportError("trimesh chưa được cài đặt")
 
     if isinstance(mesh, trimesh.Trimesh):
+        if mesh.visual is None or not hasattr(mesh.visual, "material"):
+            print("[MATERIAL] _as_trimesh: mesh thiếu visual/material, tạo opaque mới")
+            mesh.visual = _create_opaque_visual(mesh)
         return mesh
 
     if isinstance(mesh, trimesh.Scene):
         geometries = list(mesh.geometry.values())
         if not geometries:
             raise ValueError("Scene mesh rỗng")
-        return trimesh.util.concatenate(geometries)
+        joined = trimesh.util.concatenate(geometries)
+        if joined.visual is None or not hasattr(joined.visual, "material"):
+            print("[MATERIAL] _as_trimesh: Scene->Trimesh thiếu visual/material, tạo opaque mới")
+            joined.visual = _create_opaque_visual(joined)
+        return joined
 
     if hasattr(mesh, "vertices") and hasattr(mesh, "faces"):
-        return trimesh.Trimesh(
+        tmesh = trimesh.Trimesh(
             vertices=np.asarray(mesh.vertices),
             faces=np.asarray(mesh.faces),
             process=False,
         )
+        print("[MATERIAL] _as_trimesh: tạo Trimesh từ vertices/faces, gán opaque material")
+        tmesh.visual = _create_opaque_visual(tmesh)
+        return tmesh
 
     raise TypeError(f"Không hỗ trợ loại mesh: {type(mesh)}")
 
@@ -98,43 +153,6 @@ def _load_reference_image(image_path: str) -> Tuple[np.ndarray, np.ndarray]:
     return rgb, mask.astype(bool)
 
 
-def _silhouette_iou(mask_a: np.ndarray, mask_b: np.ndarray) -> float:
-    if mask_a.shape != mask_b.shape:
-        raise ValueError("Kích thước silhouette phải giống nhau")
-    intersection = np.logical_and(mask_a, mask_b).sum()
-    union = np.logical_or(mask_a, mask_b).sum()
-    return float(intersection) / float(union) if union > 0 else 0.0
-
-
-def _render_projected_silhouette(
-    mesh: Any,
-    projected: np.ndarray,
-    valid: np.ndarray,
-    image_shape: Tuple[int, int],
-    max_faces: int = 3000,
-) -> np.ndarray:
-    h, w = image_shape
-    silhouette = np.zeros((h, w), dtype=np.uint8)
-    faces = mesh.faces
-    if len(faces) > max_faces:
-        indices = np.random.default_rng(0).choice(len(faces), size=max_faces, replace=False)
-    else:
-        indices = np.arange(len(faces), dtype=np.int32)
-
-    for face_idx in indices:
-        pts = projected[faces[face_idx]]
-        face_valid = valid[faces[face_idx]]
-        if not np.any(face_valid):
-            continue
-        pts_i = np.round(pts).astype(np.int32)
-        pts_i[:, 0] = np.clip(pts_i[:, 0], 0, w - 1)
-        pts_i[:, 1] = np.clip(pts_i[:, 1], 0, h - 1)
-        if np.linalg.matrix_rank(pts_i.astype(np.float32) - pts_i[0].astype(np.float32)) < 2:
-            continue
-        cv2.fillConvexPoly(silhouette, pts_i, 255)
-    return silhouette > 0
-
-
 def align_camera_to_reference(
     mesh: Any,
     reference_image_path: str,
@@ -170,44 +188,79 @@ def align_camera_to_reference(
 
     best_score = -1.0
     best_params: Dict[str, Any] = {}
+    best_axis_sign = None
     perms = list(itertools.permutations((0, 1, 2)))
     signs = list(itertools.product((1, -1), repeat=3))
 
+    def _representative_samples(values: Tuple[float, ...], count: int = 3) -> Tuple[float, ...]:
+        if len(values) <= count:
+            return values
+        indices = np.linspace(0, len(values) - 1, count, dtype=np.int32)
+        return tuple(values[int(idx)] for idx in indices)
+
+    coarse_cam_dists = _representative_samples(cam_dists, count=3)
+    coarse_fovy_degs = _representative_samples(fovy_degs, count=3)
+    print(f"[CAMERA] coarse search values cam_dists={coarse_cam_dists} fovy_degs={coarse_fovy_degs}")
+
+    candidate_args = []
     for axis_map in perms:
         for sign in signs:
-            for cam_dist in cam_dists:
-                for fovy_deg in fovy_degs:
-                    tan_half = math.tan(math.radians(fovy_deg) / 2.0)
-                    if tan_half <= 0:
-                        continue
-                    fx = 0.5 * w / tan_half
-                    fy = 0.5 * h / tan_half
-                    x_cam = vertices[:, axis_map[0]] * sign[0]
-                    y_cam = vertices[:, axis_map[1]] * sign[1]
-                    z_cam = vertices[:, axis_map[2]] * sign[2] - cam_dist
-                    valid = z_cam < 0
-                    if np.sum(valid) < max(10, len(vertices) * 0.05):
-                        continue
-                    u = (w * 0.5) + fx * (x_cam / -z_cam)
-                    v = (h * 0.5) + fy * (y_cam / -z_cam)
-                    projected = np.stack([u, v], axis=1)
-                    silhouette_pred = _render_projected_silhouette(
-                        mesh, projected, valid, (h, w)
+            for cam_dist in coarse_cam_dists:
+                for fovy_deg in coarse_fovy_degs:
+                    candidate_args.append(
+                        (vertices, faces, silhouette_ref, w, h, axis_map, sign, cam_dist, fovy_deg)
                     )
-                    score = _silhouette_iou(silhouette_ref, silhouette_pred)
-                    if score > best_score:
-                        best_score = score
-                        best_params = {
-                            "image_size": (w, h),
-                            "fovy_deg": float(fovy_deg),
-                            "cam_dist": float(cam_dist),
-                            "axis_map": tuple(axis_map),
-                            "signs": tuple(sign),
-                            "cx": float(w * 0.5),
-                            "cy": float(h * 0.5),
-                            "fx": float(fx),
-                            "fy": float(fy),
-                        }
+
+    max_workers = min(os.cpu_count() or 1, 8)
+    start_time = time.time()
+    print(
+        f"[CAMERA] align_camera_to_reference: starting coarse search "
+        f"with {len(candidate_args)} candidates across {max_workers} workers"
+    )
+    coarse_scores = {}
+    with ProcessPoolExecutor(max_workers=max_workers, initializer=_worker_init) as executor:
+        results = executor.map(_evaluate_camera_candidate, *zip(*candidate_args))
+        for score, params in results:
+            if score is None or params is None:
+                continue
+            key = (params["axis_map"], params["signs"])
+            coarse_scores[key] = max(coarse_scores.get(key, -1.0), score)
+            if score > best_score:
+                best_score = score
+                best_params = params
+                best_axis_sign = key
+    coarse_elapsed = time.time() - start_time
+    top_axis_signs = [key for key, _ in sorted(coarse_scores.items(), key=lambda kv: kv[1], reverse=True)[:3]]
+    print(f"[CAMERA] Best coarse axis/sign candidates: {top_axis_signs}")
+    print(
+        f"[CAMERA] align_camera_to_reference: coarse search completed {len(candidate_args)} evaluations in {coarse_elapsed:.2f}s"
+    )
+
+    if best_axis_sign is None:
+        raise RuntimeError("Không tìm được camera alignment phù hợp")
+
+    fine_candidate_args = []
+    for axis_map, sign in top_axis_signs:
+        for cam_dist in cam_dists:
+            for fovy_deg in fovy_degs:
+                fine_candidate_args.append(
+                    (vertices, faces, silhouette_ref, w, h, axis_map, sign, cam_dist, fovy_deg)
+                )
+
+    print(
+        f"[CAMERA] align_camera_to_reference: refining cam_dist/fovy_deg on best axis/sign "
+        f"with {len(fine_candidate_args)} candidates"
+    )
+    with ProcessPoolExecutor(max_workers=max_workers, initializer=_worker_init) as executor:
+        results = executor.map(_evaluate_camera_candidate, *zip(*fine_candidate_args))
+        for score, params in results:
+            if score > best_score and params is not None:
+                best_score = score
+                best_params = params
+    total_elapsed = time.time() - start_time
+    print(
+        f"[CAMERA] align_camera_to_reference: completed {len(candidate_args) + len(fine_candidate_args)} evaluations in {total_elapsed:.2f}s"
+    )
     if not best_params:
         raise RuntimeError("Không tìm được camera alignment phù hợp")
 
@@ -346,6 +399,25 @@ def _triangle_region_from_centroid(
     return region_id if region_id >= 0 else default_region
 
 
+def _remap_vertex_colors_to_vertices(
+    src_vertices: np.ndarray,
+    dst_vertices: np.ndarray,
+    vertex_colors: np.ndarray,
+) -> np.ndarray:
+    src_vertices = np.asarray(src_vertices, dtype=np.float32)
+    dst_vertices = np.asarray(dst_vertices, dtype=np.float32)
+    vertex_colors = np.asarray(vertex_colors, dtype=np.uint8)
+    if len(src_vertices) == 0 or len(dst_vertices) == 0:
+        return np.zeros((len(dst_vertices), 4), dtype=np.uint8)
+    try:
+        from scipy.spatial import cKDTree
+    except Exception as exc:
+        raise ImportError(f"scipy cần được cài đặt để remap vertex_colors ({exc})") from exc
+    tree = cKDTree(src_vertices)
+    nearest_indices = tree.query(dst_vertices, k=1)[1]
+    return vertex_colors[nearest_indices]
+
+
 def subdivide_and_colorize(
     mesh: Any,
     region_mask: np.ndarray,
@@ -353,6 +425,7 @@ def subdivide_and_colorize(
     region_colors: Dict[int, Tuple[int, int, int]],
     max_triangle_size: Optional[int] = None,
     max_depth: int = 2,
+    strict_watertight_after_subdivision: bool = False,
 ) -> Tuple[Any, np.ndarray]:
     mesh = _as_trimesh(mesh)
     h, w = region_mask.shape
@@ -363,8 +436,7 @@ def subdivide_and_colorize(
     projected = [np.asarray(p, dtype=np.float32) for p in projected_coords]
     faces = [list(face) for face in mesh.faces]
     midpoint_cache = {}
-    new_faces = []
-    face_colors = []
+    face_data = []
 
     def _edge_length(a: np.ndarray, b: np.ndarray) -> float:
         return float(np.linalg.norm(a - b))
@@ -408,19 +480,22 @@ def subdivide_and_colorize(
 
         region_id = _triangle_region_from_centroid(np.stack([p0, p1, p2], axis=0), region_mask)
         color = region_colors.get(region_id, (200, 200, 200))
-        new_faces.append((i0, i1, i2))
-        face_colors.append(color)
+        face_data.append(((i0, i1, i2), color))
 
+    print(
+        f"[UV] subdivide_and_colorize: start adaptive subdivision on {len(faces)} input faces, "
+        f"max_triangle_size={max_triangle_size}, max_depth={max_depth}"
+    )
     for face in faces:
         _process_face(tuple(face), depth=0)
 
     final_vertices = np.asarray(vertices, dtype=np.float32)
-    final_faces = np.asarray(new_faces, dtype=np.int64)
+    final_faces = np.asarray([face for face, _ in face_data], dtype=np.int64)
     mesh_out = trimesh.Trimesh(vertices=final_vertices, faces=final_faces, process=False)
 
     vertex_color_accum = [[] for _ in range(len(final_vertices))]
     for face_idx, face in enumerate(final_faces):
-        color = np.array(face_colors[face_idx], dtype=np.float32)
+        color = np.array(face_data[face_idx][1], dtype=np.float32)
         for vid in face:
             vertex_color_accum[vid].append(color)
 
@@ -433,7 +508,92 @@ def subdivide_and_colorize(
         else:
             vertex_colors[idx] = np.array([200, 200, 200, 255], dtype=np.uint8)
 
-    return mesh_out, vertex_colors
+    try:
+        from scipy.spatial import cKDTree
+    except Exception as exc:
+        raise ImportError(
+            "scipy cần được cài đặt để mở rộng vertex_colors cho mesh đã sửa watertight" 
+            f" ({exc})"
+        )
+
+    print("[UV] subdivide_and_colorize: applying cheap cleanup to subdivided mesh")
+    try:
+        mesh_out.merge_vertices()
+    except Exception as exc:
+        print(f"[UV] subdivide_and_colorize: merge_vertices failed: {exc}")
+
+    try:
+        mesh_out.remove_duplicate_faces()
+    except Exception as exc:
+        faces = np.asarray(mesh_out.faces, dtype=np.int64)
+        if faces.size:
+            face_keys = np.sort(faces, axis=1)
+            _, unique_idx = np.unique(face_keys, axis=0, return_index=True)
+            mesh_out = trimesh.Trimesh(
+                vertices=np.asarray(mesh_out.vertices, dtype=np.float32),
+                faces=faces[np.sort(unique_idx)],
+                process=False,
+            )
+        print(f"[UV] subdivide_and_colorize: remove_duplicate_faces unavailable: {exc}")
+
+    try:
+        mesh_out.remove_degenerate_faces()
+    except Exception as exc:
+        faces = np.asarray(mesh_out.faces, dtype=np.int64)
+        if faces.size:
+            valid_faces = np.ones(len(faces), dtype=bool)
+            valid_faces &= faces[:, 0] != faces[:, 1]
+            valid_faces &= faces[:, 1] != faces[:, 2]
+            valid_faces &= faces[:, 2] != faces[:, 0]
+            mesh_out = trimesh.Trimesh(
+                vertices=np.asarray(mesh_out.vertices, dtype=np.float32),
+                faces=faces[valid_faces],
+                process=False,
+            )
+        print(f"[UV] subdivide_and_colorize: remove_degenerate_faces unavailable: {exc}")
+
+    cleaned_vertices = np.asarray(mesh_out.vertices, dtype=np.float32)
+    vertex_colors = _remap_vertex_colors_to_vertices(final_vertices, cleaned_vertices, vertex_colors)
+    print(
+        f"[UV] subdivide_and_colorize: cheap cleanup produced {len(cleaned_vertices)} vertices and remapped {len(vertex_colors)} colors"
+    )
+
+    if mesh_out.is_watertight:
+        print(
+            f"[UV] subdivide_and_colorize: final mesh has {len(cleaned_vertices)} verts, "
+            f"{len(mesh_out.faces)} faces"
+        )
+        return mesh_out, vertex_colors
+
+    print(
+        "[UV] subdivide_and_colorize: cheap cleanup did not produce watertight mesh"
+    )
+    if not strict_watertight_after_subdivision:
+        print(
+            "[UV] subdivide_and_colorize: proceeding without full repair; "
+            "small subdivision cracks are allowed in the default fast path"
+        )
+        print(
+            f"[UV] subdivide_and_colorize: final mesh has {len(cleaned_vertices)} verts, "
+            f"{len(mesh_out.faces)} faces"
+        )
+        return mesh_out, vertex_colors
+
+    # Rare strict path: only run heavier topology repair when explicitly requested.
+    from src.image_processing.utils import ensure_watertight
+
+    repaired_mesh, repair_report = ensure_watertight(mesh_out, hole_fill_method="auto")
+    repaired_vertices = np.asarray(repaired_mesh.vertices, dtype=np.float32)
+    vertex_colors = _remap_vertex_colors_to_vertices(cleaned_vertices, repaired_vertices, vertex_colors)
+    print(
+        f"[UV] subdivide_and_colorize: strict repair remapped vertex_colors to {len(vertex_colors)} verts"
+    )
+
+    print(
+        f"[UV] subdivide_and_colorize: repaired mesh has {len(repaired_vertices)} verts, "
+        f"{len(repaired_mesh.faces)} faces; repair methods={repair_report['methods_tried']}"
+    )
+    return repaired_mesh, vertex_colors
 
 
 def render_comparison(
@@ -853,14 +1013,17 @@ def assign_colors(
 
     if image_path:
         reference_colors, _ = _extract_reference_colors_from_image(image_path)
-        if len(reference_colors) >= 3:
-            color_map = {}
-            for item in reference_colors:
-                label_name = item["label"]
-                color_map[label_name] = np.clip(np.array(item["color"]), 0.0, 1.0)
+        if len(reference_colors) >= 2:
+            color_map = {
+                item["label"]: np.clip(np.array(item["color"]), 0.0, 1.0)
+                for item in reference_colors
+            }
             for idx, label in enumerate(labels):
-                if label in color_map:
-                    rgba = np.round(np.array(color_map[label]) * 255.0).astype(np.uint8)
+                mapped_label = label
+                if label == "midsole" and "midsole" not in color_map:
+                    mapped_label = "outsole" if "outsole" in color_map else "upper"
+                if mapped_label in color_map:
+                    rgba = np.round(np.array(color_map[mapped_label]) * 255.0).astype(np.uint8)
                     colors[idx] = np.array([rgba[0], rgba[1], rgba[2], 255], dtype=np.uint8)
                 else:
                     colors[idx] = np.array([255, 255, 255, 255], dtype=np.uint8)
@@ -887,6 +1050,7 @@ def export_colored_mesh(
 
     if vertex_colors is not None:
         mesh.visual.vertex_colors = vertex_colors
+        _force_opaque_material(mesh, vertex_colors)
 
     if file_type is None:
         suffix = out_path.suffix.lower()
@@ -903,6 +1067,28 @@ def export_colored_mesh(
 
     print(f"[EXPORT] Đã xuất mesh màu: {out_path}")
     return str(out_path)
+
+
+def _force_opaque_material(mesh: Any, vertex_colors: np.ndarray) -> None:
+    """Gán material PBR tường minh và tạo ColorVisuals rõ ràng để xuất OBJ/GLB ổn định."""
+    if trimesh is None:
+        return
+    try:
+        mesh.visual = trimesh.visual.color.ColorVisuals(
+            mesh=mesh,
+            vertex_colors=vertex_colors,
+        )
+        mesh.visual.material = trimesh.visual.material.PBRMaterial(
+            baseColorFactor=[1.0, 1.0, 1.0, 1.0],
+            metallicFactor=0.0,
+            roughnessFactor=1.0,
+            alphaMode="OPAQUE",
+            doubleSided=True,
+        )
+        print(f"[MATERIAL] _force_opaque_material: alphaMode={mesh.visual.material.alphaMode}")
+    except Exception as exc:
+        print(f"[MATERIAL] Không thể gán opaque material: {exc}")
+        mesh.visual.vertex_colors = vertex_colors
 
 
 def visualize(mesh: Any, vertex_colors: Optional[np.ndarray] = None, show: bool = True) -> None:
@@ -952,6 +1138,7 @@ def apply_uv_mapping(
     upper_color: Any = (200, 30, 30, 255),
     export_path: Optional[str] = None,
     visualize_result: bool = False,
+    strict_watertight: bool = False,
 ) -> str:
     """Wrapper tương thích với pipeline hiện tại: tô màu mesh bằng ảnh tham chiếu hoặc theo chiều cao."""
     mesh = _as_trimesh(mesh)
@@ -965,9 +1152,32 @@ def apply_uv_mapping(
 
     if original_image_path is not None and Path(original_image_path).exists():
         try:
+            start = time.time()
+            print(f"[TIME] Step 13: align_camera_to_reference start")
             camera_params = align_camera_to_reference(mesh, original_image_path)
+            print(f"[TIME] align_camera_to_reference: {time.time() - start:.2f}s")
+
+            start = time.time()
+            print(f"[TIME] Step 13: extract_color_regions start")
             region_mask, region_colors, region_names = extract_color_regions(original_image_path, cluster_count=3)
+            print(f"[TIME] extract_color_regions: {time.time() - start:.2f}s")
+            try:
+                region_color_img = np.zeros((region_mask.shape[0], region_mask.shape[1], 3), dtype=np.uint8)
+                for region_id, color in region_colors.items():
+                    bgr = tuple(int(c) for c in color[::-1])
+                    region_color_img[region_mask == region_id] = bgr
+                cv2.imwrite(str(Path(out_dir) / f"{stem}_region_mask.png"), region_color_img)
+                print(f"[DEBUG] Saved region mask visualization: {Path(out_dir) / f'{stem}_region_mask.png'}")
+            except Exception as exc:
+                print(f"[DEBUG] Không thể lưu region mask: {exc}")
+
+            start = time.time()
+            print(f"[TIME] Step 13: project_mesh_to_image_space start")
             projected_coords, valid = project_mesh_to_image_space(mesh, camera_params)
+            print(f"[TIME] project_mesh_to_image_space: {time.time() - start:.2f}s")
+
+            start = time.time()
+            print(f"[TIME] Step 13: subdivide_and_colorize start")
             colored_mesh, vertex_colors = subdivide_and_colorize(
                 mesh,
                 region_mask,
@@ -976,7 +1186,42 @@ def apply_uv_mapping(
                 max_triangle_size=min(48, max(region_mask.shape) // 16),
                 max_depth=2,
             )
+            print(f"[TIME] subdivide_and_colorize: {time.time() - start:.2f}s")
+
+            try:
+                print(
+                    f"[TOPO] Sau subdivide_and_colorize: is_watertight={colored_mesh.is_watertight} body_count={colored_mesh.body_count}"
+                )
+            except Exception as exc:
+                print(f"[TOPO] Không thể chẩn đoán mesh sau subdivide_and_colorize: {exc}")
+
+            start = time.time()
+            print(f"[TIME] Step 13: export_colored_mesh start")
             export_colored_mesh(colored_mesh, output_path, vertex_colors=vertex_colors)
+            print(f"[TIME] export_colored_mesh: {time.time() - start:.2f}s")
+
+            try:
+                from src.image_processing.utils import verify_watertight_solid
+                if strict_watertight:
+                    verify_watertight_solid(colored_mesh)
+                    print("[VERIFY] Mesh watertight before export")
+                else:
+                    print(
+                        f"[VERIFY] Bỏ qua kiểm tra watertight nghiêm ngặt trước khi xuất (strict_watertight={strict_watertight})"
+                    )
+            except Exception as exc:
+                if strict_watertight:
+                    print(f"[VERIFY] Mesh không watertight trước khi xuất: {exc}")
+                    raise
+                print(f"[VERIFY] Mesh không watertight trước khi xuất: {exc} — tiếp tục xuất với WARNING")
+
+            # Render verification views (best-effort)
+            try:
+                from src.image_processing.utils import render_verification_views
+                rv = render_verification_views(colored_mesh, out_dir, stem=f"{stem}_verify")
+                print(f"[VERIFY] Rendered verification views: {rv}")
+            except Exception as exc:
+                print(f"[VERIFY] Không thể render verification views: {exc}")
             print(f"[UV_MAPPING] Áp dụng màu từ ảnh tham chiếu '{original_image_path}' với {len(region_colors)} vùng")
             comparison_path = str(Path(out_dir) / f"{stem}_comparison.png")
             render_comparison(colored_mesh, camera_params, original_image_path, output_path=comparison_path, show=False)
@@ -1007,7 +1252,22 @@ def apply_uv_mapping(
 
     colored_mesh = mesh.copy()
     colored_mesh.visual.vertex_colors = colors
+    # final check: ensure watertight before exporting
+    try:
+        from src.image_processing.utils import verify_watertight_solid, render_verification_views
+        verify_watertight_solid(colored_mesh)
+        print("[VERIFY] Mesh watertight before export")
+    except Exception as exc:
+        if strict_watertight:
+            print(f"[VERIFY] Mesh không watertight trước khi xuất: {exc}")
+            raise
+        print(f"[VERIFY] Mesh không watertight trước khi xuất: {exc} — tiếp tục xuất với WARNING")
     export_colored_mesh(colored_mesh, output_path, vertex_colors=colors)
+    try:
+        rv = render_verification_views(colored_mesh, out_dir, stem=f"{stem}_verify")
+        print(f"[VERIFY] Rendered verification views: {rv}")
+    except Exception as exc:
+        print(f"[VERIFY] Không thể render verification views: {exc}")
 
     if visualize_result:
         visualize(colored_mesh, vertex_colors=colors, show=True)
@@ -1054,31 +1314,27 @@ def main() -> None:
     output_path = config.get("output", args.output)
 
     mesh = load_mesh(args.input_mesh)
-    labels, bbox = segment_by_height(
-        mesh,
-        threshold=float(threshold),
-        threshold_mode=str(threshold_mode),
-        axis=str(axis),
-        image_path=original_image_path,
-    )
-    colors, _, _ = assign_colors(
-        mesh,
-        labels=labels,
-        sole_color=sole_color,
-        upper_color=upper_color,
-        threshold=float(threshold),
-        threshold_mode=str(threshold_mode),
-        axis=str(axis),
-        image_path=original_image_path,
-    )
-
     if output_path is None:
         output_path = str(Path(args.input_mesh).with_suffix(".glb"))
-    export_colored_mesh(mesh, output_path, vertex_colors=colors)
-    print(f"[DONE] Bbox: {bbox}")
-    if args.visualize or config.get("visualize", False):
-        visualize(mesh, vertex_colors=colors, show=True)
+
+    output_dir = str(Path(output_path).parent)
+    stem = Path(args.input_mesh).stem
+    output_path = apply_uv_mapping(
+        mesh,
+        out_dir=output_dir,
+        stem=stem,
+        original_image_path=original_image_path,
+        threshold=float(threshold),
+        threshold_mode=str(threshold_mode),
+        axis=str(axis),
+        sole_color=sole_color,
+        upper_color=upper_color,
+        export_path=output_path,
+        visualize_result=args.visualize or config.get("visualize", False),
+    )
+    print(f"[DONE] Output: {output_path}")
 
 
 if __name__ == "__main__":
     main()
+

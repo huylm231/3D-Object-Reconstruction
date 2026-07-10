@@ -10,10 +10,9 @@ __pycache__/
 *$py.class
 
 # Dữ liệu sinh ra trong quá trình chạy (Rác, Cache, Model 3D)
-data/cache/*
 data/feedback/*
 # data/outputs/* (cho phép push thư mục output)
-data/uploads/*
+data/outputs/*
 !data/cache/.gitkeep
 !data/feedback/.gitkeep
 # !data/outputs/.gitkeep

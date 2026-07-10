@@ -1,5 +1,22 @@
+import os
+os.environ["STREAMLIT_SERVER_HEADLESS"] = "true"
+os.environ["STREAMLIT_LOGGER_LEVEL"] = "error"
+os.environ["STREAMLIT_LOG_LEVEL"] = "error"
+os.environ["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
+
 import streamlit as st
 import sys
+import logging
+import warnings
+
+warnings.filterwarnings("ignore", message=".*missing ScriptRunContext.*")
+logging.getLogger("streamlit").setLevel(logging.ERROR)
+logging.getLogger("streamlit.runtime").setLevel(logging.ERROR)
+logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").setLevel(logging.ERROR)
+for logger_name in list(logging.root.manager.loggerDict):
+    if logger_name.startswith("streamlit"):
+        logging.getLogger(logger_name).setLevel(logging.ERROR)
+
 # Cố định encoding thành UTF-8 trên Windows để tránh lỗi charmap khi in tiếng Việt
 if sys.stdout is not None and getattr(sys.stdout, 'encoding', '').lower() != 'utf-8':
     try: sys.stdout.reconfigure(encoding='utf-8')
@@ -8,7 +25,6 @@ if sys.stderr is not None and getattr(sys.stderr, 'encoding', '').lower() != 'ut
     try: sys.stderr.reconfigure(encoding='utf-8')
     except: pass
 
-import os
 import uuid
 import base64
 import hashlib
