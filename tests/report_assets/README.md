@@ -1,0 +1,1 @@
+lệnh chạy test: $env:PYTHONIOENCODING="utf-8"; .\.venv\Scripts\python.exe tests\generate_report_assets.py

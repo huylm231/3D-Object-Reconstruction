@@ -19,49 +19,104 @@ Trong thực tế, việc thiết kế mô hình 3D thủ công đòi hỏi rấ
 
 ---
 
-## 📂 2. Cấu trúc thư mục (Architecture Directory)
+## 📦 2. Trình diễn Mô hình 3D (3D Model Showcase)
 
-Dự án đã được quy hoạch chuẩn chỉ theo cấu trúc phần mềm hiện đại, phân tách rõ ràng giữa mã nguồn, trọng số mô hình và tài liệu:
+Bạn có thể xem và tương tác xoay 360 độ trực tiếp mô hình 3D mẫu của một đôi giày được tạo ra bởi hệ thống ngay trên giao diện của GitHub bằng cách bấm vào liên kết dưới đây:
+
+👉 **[📂 XEM TRỰC TIẾP MÔ HÌNH 3D GIÀY (GLB) TẠI ĐÂY](data/cache/58ba627ffee76a442104dad1bc6e8c417114394a5150121d4ef7ec9d49844ca6.glb)**
+
+*(Khi click vào liên kết trên, GitHub sẽ tự động tải trình xem 3D tương tác. Bạn có thể dùng chuột kéo để xoay 360 độ, cuộn để phóng to/thu nhỏ mô hình).*
+
+---
+
+## 📂 3. Cấu trúc thư mục chi tiết (Detailed Architecture Directory)
+
+Dự án được thiết kế theo cấu trúc mô-đun hóa hiện đại, phân tách rõ ràng giữa giao diện, luồng xử lý (pipeline), thư viện thuật toán gốc và dữ liệu lưu trữ:
 
 ```text
 3D-Object-Reconstruction/
 │
-├── data/                       # Dữ liệu vào/ra trong quá trình chạy ứng dụng
-│   ├── cache/                  # Lưu trữ mô hình 3D (.glb) đã tạo thành công
-│   ├── feedback/               # Lưu các báo cáo lỗi từ người dùng (dataset tương lai)
-│   ├── outputs/                # Nơi xuất các file tạm thời
-│   └── uploads/                # Ảnh do người dùng tải lên
+├── data/                               # Dữ liệu vào/ra trong quá trình chạy ứng dụng
+│   ├── cache/                          # Bộ nhớ đệm lưu trữ các mô hình .glb đã sinh ra
+│   │   └── 58ba627ffee76a4421...glb    # Mô hình 3D giày mẫu dùng để demo
+│   ├── feedback/                       # Lưu trữ phản hồi của người dùng về chất lượng mô hình
+│   ├── outputs/                        # Nơi xuất các tệp tin tạm thời trong quá trình xử lý
+│   └── uploads/                        # Ảnh đầu vào do người dùng tải lên hệ thống
 │
-├── dataset/                    # Chứa dataset mẫu và các file .glb ví dụ
+├── dataset/                            # Chứa bộ dữ liệu mẫu (các ảnh đầu vào và file 3D đối chứng)
 │
-├── demo/
-│   └── app.py                  # Mã nguồn giao diện Web (Streamlit), xử lý UI
+├── demo/                               # Giao diện người dùng Web Application
+│   └── app.py                          # Ứng dụng Web tương tác viết bằng Streamlit (UI/UX)
 │
-├── docs/                       # Hệ thống tài liệu kỹ thuật và lý thuyết
-│   ├── theory/                 # Tài liệu học thuật chuyên sâu (.pdf)
-│   ├── ly_thuyet_ap_dung.md    # Lý thuyết toán học & AI đã ứng dụng
-│   ├── 3D_RECONSTRUCTION_TECHNICAL_GUIDE.md # Hướng dẫn kỹ thuật
-│   └── CVIP_Kien_Thuc_Cot_Loi_3D_Reconstruction.md
+├── docs/                               # Tài liệu dự án và cơ sở lý thuyết
+│   ├── docs/theory/                    # Các tài liệu nghiên cứu gốc (File PDF khoa học)
+│   ├── HUONG_DAN.md                    # Hướng dẫn sử dụng nhanh hệ thống
+│   ├── ly_thuyet_ap_dung.md            # Giải thích chi tiết các thuật toán và mô hình toán áp dụng
+│   └── multi_view_backup_plan.md       # Phương án dự phòng sử dụng nhiều góc ảnh (Multi-view)
 │
-├── src/                        # Thư mục mã nguồn Cốt lõi (AI Pipeline)
-│   ├── image_processing/       # Các thuật toán xử lý ảnh (khử nhiễu, tách nền,...)
-│   ├── models/                 # Các wrapper kết nối model AI
-│   ├── depth_anything_v2/      # Mã nguồn ước lượng chiều sâu
-│   ├── tsr/                    # Thuật toán lõi TripoSR 
-│   └── pipeline.py             # Luồng xử lý chính: Ảnh -> Xoá phông -> AI -> GLB
+├── src/                                # Mã nguồn cốt lõi (Core Engine)
+│   ├── pipeline.py                     # Điều phối luồng xử lý chính: Ảnh -> Tiền xử lý -> AI -> Đúc Mesh -> GLB
+│   │
+│   ├── image_processing/               # Thư viện xử lý ảnh số và hình học máy tính
+│   │   ├── __init__.py                 # Khởi tạo mô-đun xử lý ảnh
+│   │   ├── 01_color_spaces.py          # Chuyển đổi và thao tác trên các không gian màu
+│   │   ├── 02_fourier_filtering.py     # Lọc tần số Fourier để khử nhiễu ảnh
+│   │   ├── 03_wavelet_denoising.py     # Khử nhiễu ảnh nâng cao sử dụng biến đổi Wavelet
+│   │   ├── 04_geometric_transform.py   # Các phép biến đổi hình học (xoay, tỉ lệ, phối cảnh)
+│   │   ├── 05_morphology.py            # Xử lý hình thái học (giãn, xói mòn, mở/đóng) để tối ưu mask
+│   │   ├── 06_edge_detection.py        # Các thuật toán phát hiện biên cạnh (Canny, Sobel)
+│   │   ├── 07_segmentation.py          # Thuật toán phân vùng ảnh và cô lập đối tượng
+│   │   ├── 08_feature_detection.py     # Phát hiện điểm đặc trưng (SIFT, SURF, ORB)
+│   │   ├── 09_feature_matching.py      # Ghép nối các điểm đặc trưng giữa các ảnh
+│   │   ├── 10_depth_estimation.py      # Giao tiếp và xử lý bản đồ chiều sâu từ ảnh
+│   │   ├── 11_point_cloud.py           # Khởi tạo và xử lý đám mây điểm (Point Cloud) từ ảnh và chiều sâu
+│   │   ├── 12_mesh_reconstruction.py   # Thuật toán đúc bề mặt lưới (Poisson, Marching Cubes)
+│   │   ├── 13_uv_mapping.py            # Trải phẳng lưới 3D và ánh xạ vân bề mặt (Texture Mapping)
+│   │   ├── _camera_worker.py           # Xử lý luồng hình ảnh camera đầu vào trực tiếp
+│   │   ├── pipeline.py                 # Đường ống xử lý ảnh phụ trợ
+│   │   └── utils.py                    # Các hàm tiện ích hỗ trợ tính toán 3D
+│   │
+│   ├── models/                         # Wrapper quản lý các mô hình AI tích hợp
+│   │   └── depth_wrapper.py            # Wrapper gọi Depth-Anything-V2 để tính bản đồ chiều sâu
+│   │
+│   ├── depth_anything_v2/              # Mã nguồn mạng nơ-ron ước lượng chiều sâu đơn ảnh Depth-Anything-V2
+│   │
+│   └── tsr/                            # Thuật toán chính TripoSR (Tri-plane Reconstruction)
+│       ├── models/                     # Kiến trúc mạng nơ-ron sinh tọa độ và màu sắc
+│       │   ├── isosurface.py           # Trích xuất bề mặt (Isosurface extraction)
+│       │   ├── nerf_renderer.py        # Bộ kết xuất NeRF (Neural Radiance Fields)
+│       │   └── network_utils.py        # Các hàm tiện ích mạng nơ-ron
+│       ├── system.py                   # Lớp quản lý chính của mô hình TripoSR
+│       ├── bake_texture.py             # Kỹ thuật nướng vân bề mặt (Texture Baking) lên Mesh 3D
+│       └── utils.py                    # Các hàm tiện ích hỗ trợ tính toán 3D
 │
-├── weights/                    # Chứa các file trọng số (Weights/Checkpoints) của AI
-│   └── depth_anything_v2_vits.pth
+├── weights/                            # Thư mục lưu trữ trọng số mô hình đã được huấn luyện trước
+│   └── depth_anything_v2_vits.pth      # Trọng số mô hình Depth-Anything-V2 (bản ViT-Small)
 │
-├── .venv/                      # Môi trường ảo Python (được tạo tự động)
-├── run.bat                     # Script khởi động tự động cho Windows
-├── requirements.txt            # Danh sách các thư viện cần thiết
-└── README.md                   # Tài liệu bạn đang đọc
+├── .gitignore                          # Cấu hình bỏ qua các tệp không cần đẩy lên GitHub (như .venv, cache nặng)
+├── requirements.txt                    # Danh sách thư viện Python và phiên bản tương thích của hệ thống
+├── run.bat                             # File chạy tự động: thiết lập môi trường, tải thư viện và khởi chạy app
+└── README.md                           # File hướng dẫn này
 ```
 
 ---
 
-## 🚀 3. Hướng dẫn Cài đặt & Khởi chạy
+## 👥 4. Thành viên nhóm thực hiện (Project Members)
+
+Dự án được nghiên cứu, phát triển và báo cáo bởi đội ngũ:
+
+| Họ và Tên | Vai trò | Nhiệm vụ chính |
+| :--- | :--- | :--- |
+| **Lê Minh Huy** | Leader, Thuyết trình | Quản lý tiến độ dự án, chuẩn bị slide và thuyết trình báo cáo chính |
+| **Nguyễn Tiến Đức** | Code chính | Thiết kế hệ thống, lập trình pipeline AI chính, xử lý toán học & đồ họa |
+| **Bùi Văn Ý** | Code phụ | Hỗ trợ lập trình các tính năng, tối ưu hóa hiệu năng Streamlit |
+| **Dương Bích Tuyền** | Làm báo cáo | Nghiên cứu cơ sở lý thuyết, soạn thảo báo cáo kỹ thuật |
+| **Nguyễn Tuyết Nhi** | Làm báo cáo | Thu thập dữ liệu thử nghiệm, tổng hợp kết quả chạy thực tế |
+| **Trần Phước Lộc** | Thuyết trình | Chuẩn bị nội dung thuyết trình, demo ứng dụng thực tế |
+
+---
+
+## 🚀 5. Hướng dẫn Cài đặt & Khởi chạy
 
 ### 💻 Yêu cầu hệ thống (System Requirements)
 - **Hệ điều hành:** Khuyến nghị Windows 10/11.
@@ -102,7 +157,7 @@ streamlit run demo/app.py
 
 ---
 
-## ⚙️ 4. Luồng xử lý kỹ thuật (Technical Pipeline)
+## ⚙️ 6. Luồng xử lý kỹ thuật (Technical Pipeline)
 
 Hệ thống AI xử lý một tấm ảnh theo quy trình khép kín (`src/pipeline.py`):
 
@@ -117,7 +172,7 @@ Hệ thống AI xử lý một tấm ảnh theo quy trình khép kín (`src/pipe
 
 ---
 
-## 🛠 5. Các lỗi thường gặp (Troubleshooting)
+## 🛠 7. Các lỗi thường gặp (Troubleshooting)
 
 Trong quá trình sử dụng, nếu bạn gặp phải các lỗi sau, hãy tham khảo cách xử lý:
 
@@ -132,7 +187,7 @@ Trong quá trình sử dụng, nếu bạn gặp phải các lỗi sau, hãy tha
 
 ---
 
-## 📚 6. Hệ thống tài liệu chuyên sâu
+## 📚 8. Hệ thống tài liệu chuyên sâu
 
 Để hiểu rõ hơn về các thuật toán hình học, đồ họa máy tính, biến đổi Fourier, thuật toán bọc bề mặt Poisson hoặc SDF, vui lòng truy cập thư mục `docs/`. Trong đó bao gồm:
 - **`ly_thuyet_ap_dung.md`**: Giải thích cụ thể các công thức toán học và AI đã ứng dụng.
