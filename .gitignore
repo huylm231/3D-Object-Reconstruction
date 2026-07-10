@@ -19,10 +19,7 @@ data/outputs/*
 !data/uploads/.gitkeep
 
 # Checkpoint weights của AI Model (File quá nặng không nên push lên Git)
-
-models/*.ckpt
 *.ckpt
-*.pth
 
 # Các thư mục linh tinh của OS và IDE
 .DS_Store
