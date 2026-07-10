@@ -19,7 +19,7 @@ data/outputs/*
 !data/uploads/.gitkeep
 
 # Checkpoint weights của AI Model (File quá nặng không nên push lên Git)
-models/*.pth
+
 models/*.ckpt
 *.ckpt
 *.pth

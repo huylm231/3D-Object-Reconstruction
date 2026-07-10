@@ -60,11 +60,17 @@ def _estimate_depth(image_path: Path, output_dir: Path):
         cfg = {"encoder": encoder, "features": 64, "out_channels": [48, 96, 192, 384]}
 
         model = DepthAnythingV2(**cfg)
-        checkpoint = Path(__file__).parent.parent / "weights" / f"depth_anything_v2_{encoder}.pth"
-        if not checkpoint.exists():
+        root = Path(__file__).parent.parent
+        checkpoint_candidates = [
+            root / "models" / f"depth_anything_v2_{encoder}.pth",
+            root / "weights" / f"depth_anything_v2_{encoder}.pth",
+        ]
+        checkpoint = next((p for p in checkpoint_candidates if p.exists()), None)
+        if checkpoint is None:
             raise FileNotFoundError(
-                f"Checkpoint khong ton tai: {checkpoint}\n"
-                "Tai ve tai: https://huggingface.co/depth-anything/Depth-Anything-V2-Small"
+                "Checkpoint Depth-Anything-V2 không tồn tại. Kiểm tra thư mục models/ hoặc weights/.\n"
+                f"Candidates:\n  - {checkpoint_candidates[0]}\n  - {checkpoint_candidates[1]}\n"
+                "Tải về tại: https://huggingface.co/depth-anything/Depth-Anything-V2-Small"
             )
 
         model.load_state_dict(torch.load(str(checkpoint), map_location="cpu"))

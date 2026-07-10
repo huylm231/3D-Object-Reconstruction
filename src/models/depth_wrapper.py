@@ -38,10 +38,15 @@ def load_depth_model(encoder: str = "vits"):
     )
 
     model = DepthAnythingV2(**configs[encoder])
-    ckpt  = ROOT / "weights" / f"depth_anything_v2_{encoder}.pth"
-    if not ckpt.exists():
+    ckpt_candidates = [
+        ROOT / "models" / f"depth_anything_v2_{encoder}.pth",
+        ROOT / "weights" / f"depth_anything_v2_{encoder}.pth",
+    ]
+    ckpt = next((p for p in ckpt_candidates if p.exists()), None)
+    if ckpt is None:
         raise FileNotFoundError(
-            f"Checkpoint not found: {ckpt}\n"
+            "Checkpoint Depth-Anything-V2 không tìm thấy. Kiểm tra thư mục models/ hoặc weights/.\n"
+            f"Candidates:\n  - {ckpt_candidates[0]}\n  - {ckpt_candidates[1]}\n"
             "Download from: https://huggingface.co/depth-anything/Depth-Anything-V2-Small"
         )
 

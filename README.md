@@ -108,8 +108,8 @@ Dự án được nghiên cứu, phát triển và báo cáo bởi đội ngũ:
 | Họ và Tên | Vai trò | Nhiệm vụ chính |
 | :--- | :--- | :--- |
 | **Lê Minh Huy** | Leader, Thuyết trình | Quản lý tiến độ dự án, chuẩn bị slide và thuyết trình báo cáo chính |
-| **Nguyễn Tiến Đức** | Code chính | Thiết kế hệ thống, lập trình pipeline AI chính, xử lý toán học & đồ họa |
-| **Bùi Văn Ý** | Code phụ | Hỗ trợ lập trình các tính năng, tối ưu hóa hiệu năng Streamlit |
+| **Nguyễn Tiến Đức** | Code  | Thiết kế hệ thống, lập trình pipeline AI chính, xử lý toán học & đồ họa |
+| **Bùi Văn Ý** | Code  | Hỗ trợ lập trình các tính năng, tối ưu hóa hiệu năng Streamlit |
 | **Dương Bích Tuyền** | Làm báo cáo | Nghiên cứu cơ sở lý thuyết, soạn thảo báo cáo kỹ thuật |
 | **Nguyễn Tuyết Nhi** | Làm báo cáo | Thu thập dữ liệu thử nghiệm, tổng hợp kết quả chạy thực tế |
 | **Trần Phước Lộc** | Thuyết trình | Chuẩn bị nội dung thuyết trình, demo ứng dụng thực tế |

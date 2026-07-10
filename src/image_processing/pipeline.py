@@ -318,13 +318,24 @@ def run_full_pipeline(
                 H, W = img.shape[:2]
                 x1, y1 = max(0, x - pad), max(0, y - pad)
                 x2, y2 = min(W, x + w + pad), min(H, y + h + pad)
-                
+
                 img_cropped = img[y1:y2, x1:x2]
                 cropped_mask = mask[y1:y2, x1:x2]
-                
+
                 processed_image_path = str(out / f"{stem}_cropped.png")
                 cv2.imwrite(processed_image_path, img_cropped)
                 _log(f"  OK: Đã cắt ảnh từ {img.shape[:2]} -> {img_cropped.shape[:2]}")
+
+                # Lưu ảnh so sánh trước/sau crop
+                if save_intermediate:
+                    # Vẽ bounding box lên ảnh gốc để minh họa
+                    img_bbox = img.copy()
+                    cv2.rectangle(img_bbox, (x1, y1), (x2, y2), (0, 255, 0), 3)
+                    show_images(
+                        [img, img_bbox, img_cropped],
+                        ["Ảnh gốc", f"Bounding Box ({x1},{y1})→({x2},{y2})", f"Sau Crop ({img_cropped.shape[1]}×{img_cropped.shape[0]})"],
+                        save_path=str(out / f"{stem}_09b_bbox_crop.png"),
+                    )
     except Exception as e:
         _log(f"  LOI Crop: {e}")
 
@@ -332,13 +343,103 @@ def run_full_pipeline(
     depth_float = None
     try:
         _progress(10, 13, "\n[10/12] Uoc luong Depth (Depth-Anything-V2)...")
-        depth_file_path = out / f"{stem}_depth.png"
-        _log(f"  >> Đường dẫn ước lượng ảnh depth: {depth_file_path} (chỉ hiển thị, không tải/chạy AI)")
-        
-        results["steps"]["10_depth"] = {
-            "skipped": True
-        }
-        
+        t = time.time()
+        mod_depth = _import_module("10_depth_estimation")
+        from src.image_processing import PROJECT_ROOT
+
+        # Thử tìm checkpoint ở cả hai vị trí phổ biến
+        ckpt_candidates = [
+            PROJECT_ROOT / "models" / "depth_anything_v2_vits.pth",
+            PROJECT_ROOT / "weights" / "depth_anything_v2_vits.pth",
+        ]
+        ckpt_path = next((p for p in ckpt_candidates if p.exists()), None)
+
+        if ckpt_path is not None:
+            _log(f"  >> Đã tìm thấy checkpoint: {ckpt_path}")
+            img_for_depth = processed_image_path if processed_image_path != image_path else image_path
+            depth_float, depth_u8 = mod_depth.estimate_depth(
+                img_for_depth, encoder="vits", mask=cropped_mask
+            )
+            depth_color = mod_depth.visualize_depth(depth_u8)
+
+            results["steps"]["10_depth"] = {"time": time.time() - t}
+
+            if save_intermediate:
+                img_for_show = cv2.imread(processed_image_path) if processed_image_path != image_path else img
+                show_images(
+                    [img_for_show, depth_u8, depth_color],
+                    ["Ảnh đầu vào", "Depth Map (Grayscale)", "Depth Map (Màu - Inferno)"],
+                    save_path=str(out / f"{stem}_10_depth.png"),
+                )
+            _log(f"  OK: Depth map đã tạo xong ({time.time() - t:.2f}s)")
+        else:
+            _log("  >> Không có checkpoint Depth-Anything-V2.")
+            _log("  >> Dùng phương pháp ước lượng chiều sâu CVIP (Gradient + Focus Measure)...")
+            t_cvip = time.time()
+
+            # --- Fallback: CVIP-based depth estimation (không cần AI) ---
+            # Phương pháp kết hợp:
+            #   1. Focus Measure (Laplacian variance per window): vùng nét -> gần
+            #   2. Gradient Magnitude (Sobel): cạnh sắc -> gần
+            #   3. Distance Transform từ mask: trung tâm vật thể -> gần nhất
+            img_for_depth = cv2.imread(processed_image_path) if processed_image_path != image_path else img
+            gray_depth = cv2.cvtColor(img_for_depth, cv2.COLOR_BGR2GRAY).astype(np.float32)
+            H_d, W_d = gray_depth.shape
+
+            # Layer 1: Gradient Magnitude (Sobel)
+            gx = cv2.Sobel(gray_depth, cv2.CV_32F, 1, 0, ksize=3)
+            gy = cv2.Sobel(gray_depth, cv2.CV_32F, 0, 1, ksize=3)
+            grad_mag = np.sqrt(gx**2 + gy**2)
+
+            # Layer 2: Laplacian variance theo từng patch (focus measure)
+            lap = cv2.Laplacian(gray_depth, cv2.CV_32F)
+            focus_map = cv2.GaussianBlur(np.abs(lap), (21, 21), 0)
+
+            # Layer 3: Distance transform từ mask (trung tâm -> gần)
+            if cropped_mask is not None:
+                mask_resized = cv2.resize(cropped_mask, (W_d, H_d), interpolation=cv2.INTER_NEAREST)
+                dist_transform = cv2.distanceTransform(mask_resized, cv2.DIST_L2, 5).astype(np.float32)
+            else:
+                # Fallback: tạo gradient ellipse từ trung tâm ảnh
+                cx, cy = W_d // 2, H_d // 2
+                Y_grid, X_grid = np.ogrid[:H_d, :W_d]
+                dist_transform = np.sqrt(((X_grid - cx) / (W_d / 2))**2 + ((Y_grid - cy) / (H_d / 2))**2).astype(np.float32)
+                dist_transform = dist_transform.max() - dist_transform  # đảo: trung tâm = cao nhất
+
+            # Chuẩn hóa từng layer về [0, 1]
+            def _norm(arr):
+                mn, mx = arr.min(), arr.max()
+                return (arr - mn) / (mx - mn + 1e-8)
+
+            grad_norm    = _norm(grad_mag)
+            focus_norm   = _norm(focus_map)
+            dist_norm    = _norm(dist_transform)
+
+            # Tổng hợp có trọng số: gradient 30% + focus 30% + distance 40%
+            depth_combined = 0.30 * grad_norm + 0.30 * focus_norm + 0.40 * dist_norm
+
+            # Làm mượt kết quả cuối
+            depth_combined = cv2.GaussianBlur(depth_combined, (15, 15), 0)
+            depth_float = _norm(depth_combined)
+            depth_u8 = (depth_float * 255).astype(np.uint8)
+
+            # Áp dụng colormap Inferno (giống Depth-Anything-V2)
+            depth_color = cv2.applyColorMap(depth_u8, cv2.COLORMAP_INFERNO)
+
+            results["steps"]["10_depth"] = {
+                "method": "CVIP-fallback (Gradient+Focus+DistTransform)",
+                "time": time.time() - t_cvip,
+            }
+
+            if save_intermediate:
+                img_for_show = img_for_depth
+                show_images(
+                    [img_for_show, depth_u8, depth_color],
+                    ["Ảnh đầu vào", "Depth Map (Grayscale)", "Depth Map (Màu - Inferno)\n[CVIP fallback]"],
+                    save_path=str(out / f"{stem}_10_depth.png"),
+                )
+            _log(f"  OK: Depth map (CVIP fallback) tạo xong ({time.time() - t_cvip:.2f}s)")
+
     except Exception as e:
         _log(f"  LOI: {e}")
         results["errors"].append(f"Step 10: {e}")
@@ -463,10 +564,19 @@ def run_pipeline(image_path, output_dir, **kwargs) -> Path:
     """
     Wrapper tuong thich voi giao dien cu (demo/app.py goi ham nay).
     Tra ve Path den file GLB.
+    
+    Luu anh trung gian tung buoc vao thu muc con: output_dir/{stem}_steps/
     """
+    image_path = Path(image_path)
+    stem = image_path.stem
+
+    # Tạo thư mục con riêng theo từng ảnh để không lẫn lộn
+    steps_dir = Path(output_dir) / f"{stem}_steps"
+    steps_dir.mkdir(parents=True, exist_ok=True)
+
     results = run_full_pipeline(
-        str(image_path), str(output_dir),
-        use_triposr=True, save_intermediate=False,
+        str(image_path), str(steps_dir),
+        use_triposr=True, save_intermediate=True,
         **kwargs
     )
 

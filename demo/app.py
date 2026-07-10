@@ -310,6 +310,13 @@ with col2:
                             progress_bar.empty()
                             status_placeholder.empty()
                             viewer_placeholder.empty()
+
+                            # Thong bao anh tung buoc da duoc luu
+                            steps_dir = OUTPUT_DIR / f"{job_id}_steps"
+                            if steps_dir.exists():
+                                step_imgs = sorted(steps_dir.glob(f"{job_id}_0*.png")) + sorted(steps_dir.glob(f"{job_id}_09b*.png")) + sorted(steps_dir.glob(f"{job_id}_10*.png"))
+                                if step_imgs:
+                                    st.info(f"📂 Ảnh minh họa từng bước đã lưu tại: `data/outputs/{job_id}_steps/`  ({len(step_imgs)} ảnh)")
                             
                             st.session_state.current_model_path = str(model_path)
                             st.session_state.current_job_id = job_id

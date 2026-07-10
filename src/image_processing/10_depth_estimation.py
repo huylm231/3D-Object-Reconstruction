@@ -79,13 +79,13 @@ def estimate_depth(
 
     depth = model.infer_image(raw_img, input_size)
 
-    # Áp dụng mặt nạ (mask) để xóa phông nền (gán depth = 0 - xa nhất)
+    # Áp dụng mặt nạ (mask) để xóa phông nền (gán depth = max - xa nhất)
     if mask is not None:
         if mask.shape != depth.shape:
             mask_resized = cv2.resize(mask, (depth.shape[1], depth.shape[0]), interpolation=cv2.INTER_NEAREST)
         else:
             mask_resized = mask
-        depth[mask_resized == 0] = depth.min() # Ép các vùng ngoài mask về giá trị xa nhất
+        depth[mask_resized == 0] = depth.max()  # Ép các vùng ngoài mask về giá trị xa nhất
 
     # Chuẩn hóa
     d_min, d_max = depth.min(), depth.max()
