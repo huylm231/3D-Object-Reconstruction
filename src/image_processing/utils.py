@@ -569,38 +569,73 @@ def render_verification_views(mesh, out_dir: str, stem: str = "verify", size: in
         except Exception:
             pass
         return results
-    except Exception as exc:
-        print(f"[VERIFY] Bỏ qua render xác minh: {exc}")
-        return results
 
-    # Fallback: try trimesh scene snapshot
-    try:
-        import trimesh
-        scene = mesh.scene()
-        # camera transforms roughly placed around bounding box
-        bbox = np.asarray(mesh.bounds)
-        center = bbox.mean(axis=0)
-        ext = bbox[1] - bbox[0]
-        radius = float(np.linalg.norm(ext)) * 1.2
-        cameras = [
-            center + np.array([0.0, 0.0, radius]),
-            center + np.array([0.0, 0.0, -radius]),
-            center + np.array([radius, 0.0, 0.0]),
-            center + np.array([0.0, -radius, 0.0]),
-        ]
-        for i, cam in enumerate(cameras):
-            try:
-                scene.camera.transform = trimesh.geometry.look_at(cam, center, [0, 1, 0])
-                png = scene.save_image(resolution=(size, size))
-                if png:
-                    path = out / f"{stem}_view{i}.png"
-                    with open(path, 'wb') as f:
-                        f.write(png)
-                    results["images"].append(str(path))
-            except Exception as exc:
-                results["errors"].append(str(exc))
-        return results
-    except Exception:
-        results["errors"].append("trimesh snapshot failed or unavailable")
+    except Exception as exc:
+        print(f"[VERIFY] Open3D render thất bại: {exc} — thử fallback trimesh...")
+        # [B2] Fallback trimesh: trimesh.geometry.look_at() KHÔNG TỒN TẠI trong trimesh
+        # → dùng cách đặt camera đơn giản hơn qua scene.camera_transform nếu có,
+        # hoặc trả về kết quả rỗng với thông báo rõ ràng thay vì crash.
+        try:
+            import trimesh as _trimesh
+            scene = mesh.scene() if hasattr(mesh, "scene") else None
+            if scene is None:
+                results["errors"].append("trimesh fallback: mesh.scene() không khả dụng")
+                return results
+
+            bbox = np.asarray(mesh.bounds) if hasattr(mesh, "bounds") else None
+            if bbox is None:
+                results["errors"].append("trimesh fallback: mesh.bounds không khả dụng")
+                return results
+
+            center = bbox.mean(axis=0)
+            ext = bbox[1] - bbox[0]
+            radius = float(np.linalg.norm(ext)) * 1.5
+
+            eye_positions = [
+                center + np.array([0.0, 0.0, radius]),
+                center + np.array([0.0, 0.0, -radius]),
+                center + np.array([radius, 0.0, 0.0]),
+                center + np.array([0.0, -radius, 0.0]),
+            ]
+
+            for i, eye in enumerate(eye_positions):
+                try:
+                    # Dùng trimesh camera_transform thay vì look_at() không tồn tại
+                    direction = center - eye
+                    dist = np.linalg.norm(direction)
+                    if dist < 1e-6:
+                        continue
+                    scene.camera.z_far = dist * 3
+                    scene.camera.z_near = dist * 0.01
+                    # trimesh.scene.cameras.Camera.look_at tồn tại nhưng gán qua transform
+                    forward = direction / dist
+                    up = np.array([0.0, 1.0, 0.0])
+                    if abs(np.dot(forward, up)) > 0.99:
+                        up = np.array([0.0, 0.0, 1.0])
+                    right = np.cross(forward, up)
+                    right /= np.linalg.norm(right)
+                    up = np.cross(right, forward)
+                    T = np.eye(4)
+                    T[:3, 0] = right
+                    T[:3, 1] = up
+                    T[:3, 2] = -forward
+                    T[:3, 3] = eye
+                    scene.camera_transform = T
+
+                    png = scene.save_image(resolution=(size, size))
+                    if png:
+                        path = out / f"{stem}_view{i}.png"
+                        with open(path, 'wb') as f:
+                            f.write(png)
+                        results["images"].append(str(path))
+                except Exception as exc2:
+                    results["errors"].append(f"trimesh view {i}: {exc2}")
+            return results
+        except Exception as exc3:
+            results["errors"].append(f"trimesh fallback failed: {exc3}")
+            print(f"[VERIFY] trimesh fallback thất bại: {exc3}")
 
     return results
+
+
+

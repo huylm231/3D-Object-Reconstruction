@@ -198,8 +198,9 @@ def align_camera_to_reference(
         indices = np.linspace(0, len(values) - 1, count, dtype=np.int32)
         return tuple(values[int(idx)] for idx in indices)
 
-    coarse_cam_dists = _representative_samples(cam_dists, count=3)
-    coarse_fovy_degs = _representative_samples(fovy_degs, count=3)
+    # [B8] count=4 — tăng độ chi tiết coarse search, tổng candidate tăng từ 432 lên 768
+    coarse_cam_dists = _representative_samples(cam_dists, count=4)
+    coarse_fovy_degs = _representative_samples(fovy_degs, count=4)
     print(f"[CAMERA] coarse search values cam_dists={coarse_cam_dists} fovy_degs={coarse_fovy_degs}")
 
     candidate_args = []
@@ -1129,7 +1130,9 @@ def apply_uv_mapping(
     scene_code: Optional[Any] = None,
     out_dir: Optional[str] = None,
     stem: Optional[str] = None,
-    texture_res: int = 2048,
+    texture_res: int = 2048,  # B4: tham số này HIỆN CHƯА DÙNG — được giữ lại dự phòng
+    # cho tương lai nếu chuyển sang bake texture atlas bằng xatlas.
+    # Pipeline hiện tại dùng vertex-color subdivision (không phải xatlas).
     original_image_path: Optional[str] = None,
     threshold: float = 0.15,
     threshold_mode: str = "ratio",
@@ -1159,7 +1162,8 @@ def apply_uv_mapping(
 
             start = time.time()
             print(f"[TIME] Step 13: extract_color_regions start")
-            region_mask, region_colors, region_names = extract_color_regions(original_image_path, cluster_count=3)
+            # [B5] cluster_count=4 — hàm đã cap nội bộ với max(2, min(x, 4))
+            region_mask, region_colors, region_names = extract_color_regions(original_image_path, cluster_count=4)
             print(f"[TIME] extract_color_regions: {time.time() - start:.2f}s")
             try:
                 region_color_img = np.zeros((region_mask.shape[0], region_mask.shape[1], 3), dtype=np.uint8)
@@ -1183,8 +1187,10 @@ def apply_uv_mapping(
                 region_mask,
                 projected_coords,
                 region_colors,
-                max_triangle_size=min(48, max(region_mask.shape) // 16),
-                max_depth=2,
+                # [B7] max_triangle_size giảm từ min(48,...) xuống min(32,...) — màu mượt hơn ở chi tiết nhỏ
+                # [B6] max_depth tăng từ 2 lên 3 — bám sát biên chi tiết tốt hơn
+                max_triangle_size=min(32, max(region_mask.shape) // 16),
+                max_depth=3,
             )
             print(f"[TIME] subdivide_and_colorize: {time.time() - start:.2f}s")
 

@@ -18,12 +18,24 @@ Pipeline:
 """
 
 import sys
+import logging as _logging
+
+# [Streamlit Warning Fix] Tắt cảnh báo 'missing ScriptRunContext' khi pipeline chạy trong tiến trình con
+for _ln in list(_logging.root.manager.loggerDict):
+    if _ln.startswith("streamlit"):
+        _logging.getLogger(_ln).setLevel(_logging.ERROR)
+
+# [B9] Đổi except: thành except Exception: kèm log — tránh nuốt lỗi không liên quan encoding
 if sys.stdout is not None and getattr(sys.stdout, 'encoding', '').lower() != 'utf-8':
-    try: sys.stdout.reconfigure(encoding='utf-8')
-    except: pass
+    try:
+        sys.stdout.reconfigure(encoding='utf-8')
+    except Exception as _e:
+        _logging.getLogger(__name__).debug("stdout reconfigure: %s", _e)
 if sys.stderr is not None and getattr(sys.stderr, 'encoding', '').lower() != 'utf-8':
-    try: sys.stderr.reconfigure(encoding='utf-8')
-    except: pass
+    try:
+        sys.stderr.reconfigure(encoding='utf-8')
+    except Exception as _e:
+        _logging.getLogger(__name__).debug("stderr reconfigure: %s", _e)
 import time
 import importlib
 import traceback
@@ -480,10 +492,11 @@ def run_full_pipeline(
         _progress(12, 13, "\n[12/12] Dung Mesh 3D...")
         t = time.time()
         mod = _import_module("12_mesh_reconstruction")
-
         if use_triposr:
+            # [B10] Thống nhất tham số với default của reconstruct_triposr():
+            # mc_resolution=384, foreground_ratio=0.85
             glb_path, raw_mesh, model, scene_code = mod.reconstruct_triposr(
-                processed_image_path, str(out), mc_resolution=256, foreground_ratio=0.85
+                processed_image_path, str(out), mc_resolution=384, foreground_ratio=0.85
             )
             results["model_path"] = glb_path
             results["steps"]["12_mesh"] = {

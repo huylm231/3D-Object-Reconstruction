@@ -262,13 +262,13 @@ if __name__ == "__main__":
     print(f"[DEMO] Đang dựng mesh 3D cho ảnh: {img_path}")
 
     try:
-        # TripoSR reconstruction
-        glb_path = reconstruct_triposr(
+        # [B3] reconstruct_triposr() tr\u1ea3 tuple 4 ph\u1ea7n t\u1eed: (glb_path, mesh, model, scene_code)
+        glb_path, _, _, _ = reconstruct_triposr(
             img_path,
             str(OUTPUT_DIR),
             mc_resolution=384,
         )
-        print(f"[DEMO] Mesh GLB đã tạo: {glb_path}")
+        print(f"[DEMO] Mesh GLB \u0111\u00e3 t\u1ea1o: {glb_path}")
 
     except Exception as e:
         print(f"[DEMO] Lỗi TripoSR: {e}")

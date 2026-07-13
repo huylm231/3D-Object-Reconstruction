@@ -69,7 +69,8 @@ def estimate_depth(
             f"Tải về tại: https://huggingface.co/depth-anything/Depth-Anything-V2-Small"
         )
 
-    model.load_state_dict(torch.load(str(checkpoint), map_location="cpu"))
+    # [A5] weights_only=True để tránh thực thi mã độc qua pickle
+    model.load_state_dict(torch.load(str(checkpoint), map_location="cpu", weights_only=True))
     model = model.to(device).eval()
 
     # Inference
@@ -85,7 +86,9 @@ def estimate_depth(
             mask_resized = cv2.resize(mask, (depth.shape[1], depth.shape[0]), interpolation=cv2.INTER_NEAREST)
         else:
             mask_resized = mask
-        depth[mask_resized == 0] = depth.max()  # Ép các vùng ngoài mask về giá trị xa nhất
+        # [A6] Depth-Anything-V2 trả disparity (giá trị CAO = GẦN camera)
+        # → gán nền = depth.min() (disparity thấp nhất = xa nhất)
+        depth[mask_resized == 0] = depth.min()
 
     # Chuẩn hóa
     d_min, d_max = depth.min(), depth.max()

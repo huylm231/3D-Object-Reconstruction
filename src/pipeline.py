@@ -73,7 +73,8 @@ def _estimate_depth(image_path: Path, output_dir: Path):
                 "Tải về tại: https://huggingface.co/depth-anything/Depth-Anything-V2-Small"
             )
 
-        model.load_state_dict(torch.load(str(checkpoint), map_location="cpu"))
+        # [B1] weights_only=True để tránh thực thi mã độc qua pickle
+        model.load_state_dict(torch.load(str(checkpoint), map_location="cpu", weights_only=True))
         model = model.to(device).eval()
 
         raw = cv2.imread(str(image_path))
