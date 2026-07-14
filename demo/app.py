@@ -1,21 +1,31 @@
 import os
+import logging
+import warnings
+
+# [Streamlit Warning Fix] Tắt cảnh báo TRƯỚC khi import streamlit
+# để 'missing ScriptRunContext' không bao giờ xuất hiện
 os.environ["STREAMLIT_SERVER_HEADLESS"] = "true"
 os.environ["STREAMLIT_LOGGER_LEVEL"] = "error"
 os.environ["STREAMLIT_LOG_LEVEL"] = "error"
 os.environ["STREAMLIT_BROWSER_GATHER_USAGE_STATS"] = "false"
 
-import streamlit as st
-import sys
-import logging
-import warnings
-
 warnings.filterwarnings("ignore", message=".*missing ScriptRunContext.*")
+# Tắt toàn bộ logger streamlit trước khi nó được khởi tạo
+for _ln in list(logging.root.manager.loggerDict):
+    if _ln.startswith("streamlit"):
+        logging.getLogger(_ln).setLevel(logging.ERROR)
 logging.getLogger("streamlit").setLevel(logging.ERROR)
 logging.getLogger("streamlit.runtime").setLevel(logging.ERROR)
 logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").setLevel(logging.ERROR)
-for logger_name in list(logging.root.manager.loggerDict):
-    if logger_name.startswith("streamlit"):
-        logging.getLogger(logger_name).setLevel(logging.ERROR)
+
+import streamlit as st
+import sys
+
+# Tắt lại sau khi import (đề phòng streamlit tự reset logger level)
+for _ln in list(logging.root.manager.loggerDict):
+    if _ln.startswith("streamlit"):
+        logging.getLogger(_ln).setLevel(logging.ERROR)
+
 
 # Cố định encoding thành UTF-8 trên Windows để tránh lỗi charmap khi in tiếng Việt
 if sys.stdout is not None and getattr(sys.stdout, 'encoding', '').lower() != 'utf-8':
@@ -30,8 +40,11 @@ import base64
 import hashlib
 import shutil
 import time
+import threading
 import concurrent.futures
 from pathlib import Path
+from PIL import Image
+import io
 
 # ──────────────────── Cau hinh thu muc ────────────────────
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,6 +56,31 @@ FEEDBACK_DIR = ROOT / "data" / "feedback"
 for d in [UPLOAD_DIR, OUTPUT_DIR, CACHE_DIR, FEEDBACK_DIR]:
     d.mkdir(parents=True, exist_ok=True)
 
+# [A2] Giới hạn kích thước giải nén ảnh để chặn decompression bomb
+Image.MAX_IMAGE_PIXELS = 89_478_485  # ~10000x8947
+
+# [A4] Giới hạn 1 job GPU đồng thời để tránh hết VRAM/RAM
+_JOB_SEMAPHORE = threading.Semaphore(1)
+
+# [A2] Kích thước file upload tối đa (bytes)
+_MAX_UPLOAD_SIZE = 10 * 1024 * 1024  # 10 MB
+
+
+def validate_uploaded_image(img_bytes: bytes) -> bool:
+    """Xác thực nội dung file upload thực sự là ảnh hợp lệ.
+    Raises ValueError nếu không hợp lệ."""
+    if len(img_bytes) > _MAX_UPLOAD_SIZE:
+        raise ValueError(
+            f"File quá lớn ({len(img_bytes) / 1024 / 1024:.1f} MB). "
+            f"Giới hạn tối đa: {_MAX_UPLOAD_SIZE / 1024 / 1024:.0f} MB."
+        )
+    try:
+        img = Image.open(io.BytesIO(img_bytes))
+        img.verify()  # Kiểm tra format ảnh hợp lệ (không giải mã toàn bộ)
+    except Exception:
+        raise ValueError("File không phải là ảnh hợp lệ hoặc bị hỏng.")
+    return True
+
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
@@ -52,32 +90,7 @@ except ImportError:
     from src.pipeline import run_pipeline
 
 # ──────────────────── Utils ────────────────────
-def compare_images(img1_bytes, img2_path):
-    try:
-        import cv2
-        import numpy as np
-        nparr1 = np.frombuffer(img1_bytes, np.uint8)
-        img1 = cv2.imdecode(nparr1, cv2.IMREAD_COLOR)
-        img2 = cv2.imread(str(img2_path))
-        if img1 is None or img2 is None:
-            return 0.0
-        
-        img1 = cv2.resize(img1, (256, 256))
-        img2 = cv2.resize(img2, (256, 256))
-        
-        hsv1 = cv2.cvtColor(img1, cv2.COLOR_BGR2HSV)
-        hsv2 = cv2.cvtColor(img2, cv2.COLOR_BGR2HSV)
-        
-        hist1 = cv2.calcHist([hsv1], [0, 1], None, [50, 60], [0, 180, 0, 256])
-        hist2 = cv2.calcHist([hsv2], [0, 1], None, [50, 60], [0, 180, 0, 256])
-        
-        cv2.normalize(hist1, hist1, 0, 1, cv2.NORM_MINMAX)
-        cv2.normalize(hist2, hist2, 0, 1, cv2.NORM_MINMAX)
-        
-        similarity = cv2.compareHist(hist1, hist2, cv2.HISTCMP_CORREL)
-        return similarity
-    except Exception:
-        return 0.0
+# [A7] Đã xóa hàm compare_images() — dead code, không được gọi ở đâu.
 
 def find_similar_cached_model(img_bytes, search_dir):
     """Tim anh tuong tu trong thu muc. Tra ve (image_path, score) hoac (None, 0.0)."""
@@ -111,11 +124,12 @@ def find_glbs_for_image(image_path):
         elif white_glb is None:  # GLB dau tien khong phai textured = trang
             white_glb = g
     
-    # Tim colored trong cache
+    # [A1] Tim colored trong cache — chỉ lấy file khớp đúng base_stem
     if not colored_glb:
         for cache_glb in CACHE_DIR.glob("*.glb"):
-            colored_glb = cache_glb
-            break  # Lay file dau tien
+            if base_stem in cache_glb.stem:
+                colored_glb = cache_glb
+                break
     
     return white_glb, colored_glb
 
@@ -209,6 +223,14 @@ with col2:
     
     if uploaded_file is not None:
         img_bytes = uploaded_file.getvalue()
+        
+        # [A2] Xác thực ảnh upload trước khi xử lý
+        try:
+            validate_uploaded_image(img_bytes)
+        except ValueError as e:
+            st.error(f"❌ Ảnh không hợp lệ: {e}")
+            st.stop()
+        
         img_hash = hashlib.sha256(img_bytes).hexdigest()
         
         cached_glb = CACHE_DIR / f"{img_hash}.glb"
@@ -270,6 +292,10 @@ with col2:
                         time.sleep(1)
                         st.rerun()
                 else:
+                    # [A4] Giới hạn 1 job GPU đồng thời
+                    if not _JOB_SEMAPHORE.acquire(blocking=False):
+                        st.warning("⏳ Hệ thống đang xử lý cho người dùng khác. Vui lòng thử lại sau.")
+                        st.stop()
                     with st.spinner("Đang xử lý ảnh và chạy AI (có thể mất vài phút)..."):
                         try:
                             ext = Path(uploaded_file.name).suffix.lower()
@@ -325,6 +351,8 @@ with col2:
                             st.rerun()
                         except Exception as e:
                             st.error(f"Đã xảy ra lỗi trong quá trình xử lý: {e}")
+                        finally:
+                            _JOB_SEMAPHORE.release()
 
         if st.session_state.current_model_path is not None:
             model_path = st.session_state.current_model_path
@@ -350,7 +378,10 @@ with col2:
                         
                         if c1.button("✅ Lưu kết quả (Tốt)", type="primary", width="stretch"):
                             # Luu model mau
-                            shutil.copy(model_path, cached_glb)
+                            # [A3] Ghi atomic: file tạm → os.replace
+                            _cached_tmp = cached_glb.with_suffix(".tmp")
+                            shutil.copy(model_path, _cached_tmp)
+                            os.replace(_cached_tmp, cached_glb)
                                 
                             st.session_state.show_save_buttons = False
                             st.success("🎉 Đã lưu thành công! Lần sau các ảnh tương tự sẽ tự động được nhận diện.")

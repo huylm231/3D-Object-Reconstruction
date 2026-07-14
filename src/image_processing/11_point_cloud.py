@@ -25,7 +25,7 @@ def depth_to_pointcloud(
     cx: float = None,
     cy: float = None,
     depth_scale: float = 1000.0,
-    depth_trunc: float = 10.0,
+    depth_trunc: float = 1.0,  # [A12] Giảm từ 10.0 → 1.0 cho khớp thang depth chuẩn hóa [0,1]
 ):
     """
     Chuyển depth map + ảnh màu thành Point Cloud bằng Open3D.
@@ -47,6 +47,9 @@ def depth_to_pointcloud(
 
     h, w = color_img.shape[:2]
     if fx is None:
+        # TODO [A11]: Giá trị fx ước lượng thô theo kinh nghiệm. Lý tưởng nên
+        # dùng lại fovy_deg từ align_camera_to_reference() (bước 13) để fx/fy
+        # nhất quán với camera alignment, nhưng bước 13 chạy sau bước 11.
         fx = float(max(h, w))
     if fy is None:
         fy = fx
@@ -65,22 +68,24 @@ def depth_to_pointcloud(
     # Tạo Open3D images
     depth_o3d = o3d.geometry.Image(depth_uint16)
     color_rgb = cv2.cvtColor(color_img, cv2.COLOR_BGR2RGB)
-    color_o3d = o3d.geometry.Image(color_rgb)
 
     # Camera intrinsics
     intrinsic = o3d.camera.PinholeCameraIntrinsic(
         int(w), int(h), fx, fy, cx, cy
     )
 
-    # Tạo RGBD image (chỉ dùng depth, bỏ qua màu để tập trung vào hình khối)
-    pcd = o3d.geometry.PointCloud.create_from_depth_image(
+    # [A8] Tạo RGBD image — dùng cả depth + màu để point cloud có màu thật
+    # (thay vì create_from_depth_image + paint_uniform_color xám)
+    color_resized = cv2.resize(color_rgb, (depth_uint16.shape[1], depth_uint16.shape[0]))
+    color_o3d = o3d.geometry.Image(color_resized.astype(np.uint8))
+    rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
+        color_o3d,
         depth_o3d,
-        intrinsic,
         depth_scale=depth_scale,
         depth_trunc=depth_trunc,
+        convert_rgb_to_intensity=False,
     )
-    # Sơn toàn bộ mây điểm thành màu trắng
-    pcd.paint_uniform_color([0.9, 0.9, 0.9])
+    pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd, intrinsic)
 
     # Ước lượng normals
     pcd.estimate_normals(

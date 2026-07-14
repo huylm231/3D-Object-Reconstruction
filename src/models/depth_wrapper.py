@@ -50,7 +50,8 @@ def load_depth_model(encoder: str = "vits"):
             "Download from: https://huggingface.co/depth-anything/Depth-Anything-V2-Small"
         )
 
-    model.load_state_dict(torch.load(str(ckpt), map_location="cpu"))
+    # [A5] weights_only=True để tránh thực thi mã độc qua pickle
+    model.load_state_dict(torch.load(str(ckpt), map_location="cpu", weights_only=True))
     return model.to(device).eval(), device
 
 
