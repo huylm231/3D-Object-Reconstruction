@@ -1,0 +1,17 @@
+/*digraph workflow {
+	bgcolor=white nodesep=0.55 rankdir=LR ranksep=0.75 splines=ortho
+	node [color="#4C78A8" fillcolor="#EAF2FF" fontname=Arial fontsize=11 penwidth=1.2 shape=box style="rounded,filled"]
+	edge [arrowsize=0.8 color="#4C78A8" penwidth=1.4]
+	"Ảnh" [label="Ảnh"]
+	Mask [label=Mask]
+	Crop [label=Crop]
+	Depth [label=Depth]
+	Mesh [label=Mesh]
+	Texture [label=Texture]
+	"Ảnh" -> Mask
+	Mask -> Crop
+	Crop -> Depth
+	Depth -> Mesh
+	Mesh -> Texture
+}
+*/
